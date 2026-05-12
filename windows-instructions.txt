@@ -1,0 +1,54 @@
+Windows Build & Deploy Instructions
+====================================
+
+Prerequisites
+-------------
+- Visual Studio 2022 with "Desktop development with C++" workload
+- CMake (included with VS, or install separately)
+- Git
+
+Build
+-----
+Option A — Visual Studio:
+
+  1. Open the folder in VS: File → Open → Folder → select gw2-accessibility
+  2. VS will detect CMakeLists.txt and configure automatically
+  3. Set build target to x64-Release
+  4. Build: Build → Build All (or Ctrl+Shift+B)
+  5. Output: out/build/x64-Release/GW2Accessibility.dll
+
+Option B — Command line:
+
+  cmake -B build -DCMAKE_BUILD_TYPE=Release
+  cmake --build build --config Release
+  :: Output: build/Release/GW2Accessibility.dll
+
+Deploy
+------
+  Copy GW2Accessibility.dll to:
+  C:\Program Files\Guild Wars 2\addons\GW2Accessibility.dll
+
+Dependencies
+------------
+- Nexus (required): https://raidcore.gg — Nexus addon loader for GW2
+- Events: Chat (required for TTS): install from the Nexus addon library
+  or https://github.com/jsantorek/GW2-Chat
+  Look for "Events: Chat" by Vonsh.1427 in Nexus' addon list
+
+TTS Notes
+---------
+- Windows has SAPI (Microsoft Speech API) built-in — no extra install
+- Uses the default Windows TTS voice (Microsoft David, Zira, etc.)
+- Can change the voice in Windows Settings > Time & Language > Speech
+
+Mouse Position Toggle Keybind
+-----------------------------
+  1. Open Nexus overlay (default: Insert)
+  2. Click gear icon → Keybinds
+  3. Find "GW2ACCESSIBILITY_MOUSE_TOGGLE"
+  4. Assign your preferred key combination
+
+Configuration
+-------------
+  Settings are saved to the Nexus addon directory at:
+  %AppData%\..\Local\Nexus\addons\GW2Accessibility\config.json
