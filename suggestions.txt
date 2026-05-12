@@ -1,0 +1,37 @@
+Accessibility Feature Ideas for Guild Wars 2
+============================================
+
+Visual
+------
+- Cursor enhancement — larger cursor, high-contrast color, crosshair overlay
+- Screen flash on dodge/pain — visual substitute for audio dodge cue
+- CC break alert — screen indicator when stunned/dazed/knocked down
+- Low health/defeat warning — prominent overlay when HP drops below threshold
+- Boon/condition ticker — enhanced display of stability, aegis, fear, stun, etc.
+
+Auditory
+--------
+-- Chat TTS — read party/squad/whisper chat aloud
+- Danger-ping-to-text — translate audio tells into on-screen text/icons
+- Event trigger announcements — spoken or on-screen notification for world bosses, metas, squad timers
+
+Motor
+-----
+- Mouse position memory — configurable positions to quickly move cursor (inventory, minimap, skill bar, etc.)
+- Click assist — hold-to-auto-click for menu navigation
+- Sticky keys / toggle helpers — toggle autorun, dodge, action-camera without holding
+- Quick-mount radial — single-press mount selector
+
+Cognitive
+---------
+- Mechanic reminder overlay — on-screen checklist for raid/fractal mechanics
+- Waypoint navigator — highlight nearest WP or POI on minimap
+- Gathering route helper — visual path to nearby nodes
+- Fishing bite indicator — prominent icon when bobber moves
+
+GW2-Specific
+------------
+- Profession resource bar — enlarged, repositionable display of lifeforce, adrenaline, initiative, etc.
+- Combat log reader — TTS for important combat events
+- Action camera reticle — customizable crosshair for action-camera mode
+- Mount altitude ladder — numeric altitude display for griffon/skyscale

@@ -1,0 +1,8 @@
+build/
+*.dll
+*.dll.a
+.vs/
+*.user
+*.suo
+.DS_Store
+Thumbs.db
