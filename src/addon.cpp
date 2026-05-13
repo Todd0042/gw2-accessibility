@@ -64,11 +64,12 @@ static float g_CrosshairColor[4] = {1.0f, 0.0f, 0.0f, 1.0f};
 static bool g_IconDisplayEnabled = false;
 static float g_IconSize = 32.0f;
 static float g_IconSpacing = 4.0f;
+static float g_IconOpacity = 1.0f;
 static ConfigPosition g_IconPosition = {AnchorPoint::Center, 0.0f, -10.0f};
-static std::unordered_map<unsigned int, ImTextureID> g_IconTextures;
+static std::unordered_map<unsigned int, Texture_t*> g_IconTextures;
 static std::unordered_map<unsigned int, std::string> g_IconUrlCache;
 static std::unordered_map<unsigned int, DWORD> g_ActiveMechanics;
-static const DWORD g_MechanicIconTimeout = 30000;
+static const DWORD g_MechanicIconTimeout = 15000;
 
 // ── TTS ──────────────────────────────────────────────────────────────────────
 
@@ -106,13 +107,76 @@ struct EvCombatData {
 struct RaidMechanic {
     unsigned int skillID = 0;
     std::string name;
-    bool enabled = false;
+    bool ttsEnabled = false;
+    bool iconEnabled = false;
 };
+
+struct BuiltinMechanic {
+    unsigned int skillID;
+    const char* name;
+    const char* ttsMsg; // null means use name
+    const char* iconUrl; // null means no icon
+};
+
+// Combined built-in mechanics list (raid encounter effects only)
+static const BuiltinMechanic g_BuiltinMechanics[] = {
+    // Raid encounter effects
+    {34387, "Volatile Poison", nullptr, "https://wiki.guildwars2.com/images/e/e0/Volatile_Poison.png"},
+    {38210, "Shared Agony", nullptr, "https://wiki.guildwars2.com/images/5/53/Shared_Agony.png"},
+    {47414, "Necrosis", nullptr, "https://wiki.guildwars2.com/images/4/4b/Necrosis.png"},
+    {47164, "Soul Shackle", nullptr, "https://wiki.guildwars2.com/images/3/3c/Soul_Shackle.png"},
+    {34473, "Corruption", "Corruption, get to fountain", "https://wiki.guildwars2.com/images/f/f6/Corruption.png"},
+    {34450, "Unstable Blood Magic", "SAK, go to wall and drop", "https://wiki.guildwars2.com/images/3/3e/Unstable_Blood_Magic.png"},
+    {48121, "Arcing Affliction", "Bomb, run away", "https://wiki.guildwars2.com/images/5/5a/Arcing_Affliction.png"},
+    {52812, "Tidal Pool", nullptr, "https://wiki.guildwars2.com/images/6/6f/Tidal_Pool.png"},
+    {79513, "Biting Swarm", "Bees. Get away", "https://wiki.guildwars2.com/images/b/b5/Biting_Swarm.png"},
+    // Fixated variants (share same icon)
+    {34508, "Fixated", nullptr, "https://wiki.guildwars2.com/images/a/a2/Fixated.png"},
+    {47434, "Fixated", nullptr, nullptr},
+    {48533, "Fixated", nullptr, nullptr},
+    {39131, "Fixated", nullptr, nullptr},
+    {39928, "Fixated", nullptr, nullptr},
+    {38985, "Fixated", nullptr, nullptr},
+    {39558, "Fixated", nullptr, nullptr},
+    {58136, "Fixated", nullptr, nullptr},
+    {79380, "Fixated", nullptr, nullptr},
+};
+static const size_t g_BuiltinMechanicCount = sizeof(g_BuiltinMechanics) / sizeof(g_BuiltinMechanics[0]);
+
+// Per-player toggle state for built-in mechanics
+static std::unordered_map<unsigned int, bool> g_BuiltinMechanicTts;
+static std::unordered_map<unsigned int, bool> g_BuiltinMechanicIcon;
+
+static const BuiltinMechanic* FindBuiltinMechanic(unsigned int skillID)
+{
+    for (size_t i = 0; i < g_BuiltinMechanicCount; i++)
+    {
+        if (g_BuiltinMechanics[i].skillID == skillID)
+            return &g_BuiltinMechanics[i];
+    }
+    return nullptr;
+}
+
+static bool IsBuiltinMechanicTtsEnabled(unsigned int skillID)
+{
+    auto it = g_BuiltinMechanicTts.find(skillID);
+    return it != g_BuiltinMechanicTts.end() ? it->second : false;
+}
+
+static bool IsBuiltinMechanicIconEnabled(unsigned int skillID)
+{
+    auto it = g_BuiltinMechanicIcon.find(skillID);
+    return it != g_BuiltinMechanicIcon.end() ? it->second : false;
+}
 
 static std::vector<RaidMechanic> g_RaidMechanics;
 
 static bool g_MechanicsAnnounceEnabled = false;
 static bool g_ReadAllDebuffs = false;
+static bool g_ShowMechanicsWindow = false;
+static bool g_TestIconEnabled = false;
+static DWORD g_LoadTime = 0;
+static bool g_PreloadDone = false;
 static std::unordered_map<unsigned int, std::string> g_DebuffNameCache;
 
 // Track active buffs with last-seen timestamp so expired debuffs are cleared
@@ -127,7 +191,10 @@ static const DWORD g_FoodUtilityMinDuration = 60000; // must be active >1 min to
 
 // Ally downed tracking
 static bool g_AllyDownedEnabled = false;
+static bool g_TofusToggle = false;
 static std::unordered_set<uint64_t> g_DownedAgents;
+static bool g_BossDeathAnnounced = false;
+static bool g_InKeepConstructFight = false;
 
 // Necrosis stack tracking
 static int g_NecrosisStacks = 0;
@@ -259,6 +326,48 @@ static std::string FetchSkillName(unsigned int skillID, const char* eventSkillNa
     return name;
 }
 
+struct ApiResponse {
+    bool ok;
+    std::string body;
+};
+
+static ApiResponse FetchFromGW2Api(HINTERNET hConnect, const wchar_t* path)
+{
+    ApiResponse result = {false, ""};
+    HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", path, nullptr, nullptr, nullptr, WINHTTP_FLAG_SECURE);
+    if (!hRequest) return result;
+
+    if (WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
+        WinHttpReceiveResponse(hRequest, nullptr))
+    {
+        DWORD statusCode = 0;
+        DWORD statusSize = sizeof(statusCode);
+        WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, nullptr, &statusCode, &statusSize, nullptr);
+
+        if (statusCode == 200)
+        {
+            DWORD bytesRead = 0;
+            std::vector<char> buffer(4096);
+            while (WinHttpReadData(hRequest, buffer.data(), static_cast<DWORD>(buffer.size()), &bytesRead) && bytesRead > 0)
+                result.body.append(buffer.data(), bytesRead);
+            result.ok = true;
+        }
+    }
+    WinHttpCloseHandle(hRequest);
+    return result;
+}
+
+static std::string ParseIconUrl(const std::string& jsonBody)
+{
+    try
+    {
+        auto j = nlohmann::json::parse(jsonBody);
+        return j.value("icon", "");
+    }
+    catch (...) {}
+    return "";
+}
+
 static std::string FetchSkillIconUrl(unsigned int skillID)
 {
     auto cached = g_IconUrlCache.find(skillID);
@@ -272,31 +381,79 @@ static std::string FetchSkillIconUrl(unsigned int skillID)
     HINTERNET hConnect = WinHttpConnect(hSession, L"api.guildwars2.com", INTERNET_DEFAULT_HTTPS_PORT, 0);
     if (hConnect)
     {
-        std::wstring path = L"/v2/skills/" + std::to_wstring(skillID);
-        HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", path.c_str(), nullptr, nullptr, nullptr, WINHTTP_FLAG_SECURE);
+        std::wstring idStr = std::to_wstring(skillID);
+
+        auto resp = FetchFromGW2Api(hConnect, (L"/v2/skills/" + idStr).c_str());
+        if (resp.ok)
+            iconUrl = ParseIconUrl(resp.body);
+
+        WinHttpCloseHandle(hConnect);
+    }
+    WinHttpCloseHandle(hSession);
+
+    g_IconUrlCache[skillID] = iconUrl;
+
+    return iconUrl;
+}
+
+static std::string GetIconsDir()
+{
+    const char* dir = g_API->Paths_GetAddonDirectory("GW2Accessibility");
+    std::string path = dir ? dir : "";
+    if (path.empty())
+        path = ".\\";
+    if (path.back() != '\\' && path.back() != '/')
+        path += '\\';
+    path += "icons\\";
+    return path;
+}
+
+static bool DownloadUrlToFile(const std::string& url, const std::string& filepath)
+{
+    size_t schemeEnd = url.find("://");
+    if (schemeEnd == std::string::npos) return false;
+    size_t hostStart = schemeEnd + 3;
+    size_t pathStart = url.find('/', hostStart);
+    if (pathStart == std::string::npos) return false;
+
+    std::string host = url.substr(hostStart, pathStart - hostStart);
+    std::string endpoint = url.substr(pathStart);
+
+    HINTERNET hSession = WinHttpOpen(L"GW2Accessibility/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, nullptr, nullptr, 0);
+    if (!hSession) return false;
+
+    bool success = false;
+    std::wstring whost(host.begin(), host.end());
+    std::wstring wendpoint(endpoint.begin(), endpoint.end());
+    HINTERNET hConnect = WinHttpConnect(hSession, whost.c_str(), INTERNET_DEFAULT_HTTPS_PORT, 0);
+    if (hConnect)
+    {
+        HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", wendpoint.c_str(), nullptr, nullptr, nullptr, WINHTTP_FLAG_SECURE);
         if (hRequest)
         {
-            if (WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0))
+            if (WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
+                WinHttpReceiveResponse(hRequest, nullptr))
             {
-                if (WinHttpReceiveResponse(hRequest, nullptr))
+                DWORD statusCode = 0;
+                DWORD statusSize = sizeof(statusCode);
+                WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, nullptr, &statusCode, &statusSize, nullptr);
+                if (statusCode == 200)
                 {
-                    DWORD statusCode = 0;
-                    DWORD statusSize = sizeof(statusCode);
-                    WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, nullptr, &statusCode, &statusSize, nullptr);
-                    if (statusCode == 200)
-                    {
-                        std::string result;
-                        DWORD bytesRead = 0;
-                        std::vector<char> buffer(4096);
-                        while (WinHttpReadData(hRequest, buffer.data(), static_cast<DWORD>(buffer.size()), &bytesRead) && bytesRead > 0)
-                            result.append(buffer.data(), bytesRead);
+                    std::vector<char> data;
+                    DWORD bytesRead = 0;
+                    std::vector<char> buffer(8192);
+                    while (WinHttpReadData(hRequest, buffer.data(), static_cast<DWORD>(buffer.size()), &bytesRead) && bytesRead > 0)
+                        data.insert(data.end(), buffer.begin(), buffer.begin() + bytesRead);
 
-                        try
+                    if (!data.empty())
+                    {
+                        std::filesystem::create_directories(std::filesystem::path(filepath).parent_path());
+                        std::ofstream file(filepath, std::ios::binary);
+                        if (file)
                         {
-                            auto json = nlohmann::json::parse(result);
-                            iconUrl = json.value("icon", "");
+                            file.write(data.data(), data.size());
+                            success = true;
                         }
-                        catch (...) {}
                     }
                 }
             }
@@ -305,25 +462,77 @@ static std::string FetchSkillIconUrl(unsigned int skillID)
         WinHttpCloseHandle(hConnect);
     }
     WinHttpCloseHandle(hSession);
-
-    if (!iconUrl.empty())
-        g_IconUrlCache[skillID] = iconUrl;
-
-    return iconUrl;
+    return success;
 }
 
 static ImTextureID LoadIconTexture(unsigned int skillID)
 {
     auto cached = g_IconTextures.find(skillID);
     if (cached != g_IconTextures.end())
-        return cached->second;
+    {
+        if (cached->second && cached->second->Resource)
+            return static_cast<ImTextureID>(cached->second->Resource);
+        return nullptr;
+    }
 
+    std::string iconsDir = GetIconsDir();
+    std::string filepath = iconsDir + std::to_string(skillID) + ".png";
+
+    char identifier[64];
+    snprintf(identifier, sizeof(identifier), "gw2accessibility_icon_%u", skillID);
+
+    // Prefer file on disk
+    {
+        Texture_t* tex = g_API->Textures_GetOrCreateFromFile(identifier, filepath.c_str());
+        if (tex && tex->Resource)
+        {
+            g_IconTextures[skillID] = tex;
+            return static_cast<ImTextureID>(tex->Resource);
+        }
+    }
+
+    // Not on disk — get URL (API first, wiki fallback) and download
     std::string url = FetchSkillIconUrl(skillID);
+    if (url.empty())
+    {
+        const BuiltinMechanic* bm = FindBuiltinMechanic(skillID);
+        if (bm)
+        {
+            if (bm->iconUrl)
+            {
+                url = bm->iconUrl;
+            }
+            else
+            {
+                for (size_t i = 0; i < g_BuiltinMechanicCount; i++)
+                {
+                    if (g_BuiltinMechanics[i].iconUrl && strcmp(g_BuiltinMechanics[i].name, bm->name) == 0)
+                    {
+                        url = g_BuiltinMechanics[i].iconUrl;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     if (url.empty())
         return nullptr;
 
-    // Parse URL into base + path for Nexus texture API
-    // URL format: https://render.guildwars2.com/file/ABC123/icon.png
+    // Download to disk cache
+    DownloadUrlToFile(url, filepath);
+
+    // Try loading from file again (now that we saved it)
+    {
+        Texture_t* tex = g_API->Textures_GetOrCreateFromFile(identifier, filepath.c_str());
+        if (tex && tex->Resource)
+        {
+            g_IconTextures[skillID] = tex;
+            return static_cast<ImTextureID>(tex->Resource);
+        }
+    }
+
+    // Last resort: load from URL directly
     size_t schemeEnd = url.find("://");
     if (schemeEnd == std::string::npos) return nullptr;
     size_t pathStart = url.find('/', schemeEnd + 3);
@@ -332,16 +541,14 @@ static ImTextureID LoadIconTexture(unsigned int skillID)
     std::string base = url.substr(0, pathStart);
     std::string endpoint = url.substr(pathStart);
 
-    char identifier[64];
-    snprintf(identifier, sizeof(identifier), "gw2accessibility_icon_%u", skillID);
-
     Texture_t* tex = g_API->Textures_GetOrCreateFromURL(identifier, base.c_str(), endpoint.c_str());
     if (tex && tex->Resource)
     {
-        g_IconTextures[skillID] = static_cast<ImTextureID>(tex->Resource);
-        return g_IconTextures[skillID];
+        g_IconTextures[skillID] = tex;
+        return static_cast<ImTextureID>(tex->Resource);
     }
 
+    g_IconTextures[skillID] = tex;
     return nullptr;
 }
 
@@ -349,8 +556,14 @@ static void LoadAllConfiguredIcons()
 {
     for (const auto& m : g_RaidMechanics)
     {
-        if (m.enabled && m.skillID != 0)
+        if (m.iconEnabled && m.skillID != 0)
             LoadIconTexture(m.skillID);
+    }
+    // Preload built-in mechanic icons
+    for (size_t i = 0; i < g_BuiltinMechanicCount; i++)
+    {
+        if (IsBuiltinMechanicIconEnabled(g_BuiltinMechanics[i].skillID))
+            LoadIconTexture(g_BuiltinMechanics[i].skillID);
     }
 }
 
@@ -404,11 +617,13 @@ static void SaveSettings()
     j["iconDisplayEnabled"] = g_IconDisplayEnabled;
     j["iconSize"] = g_IconSize;
     j["iconSpacing"] = g_IconSpacing;
+    j["iconOpacity"] = g_IconOpacity;
     j["iconAnchor"] = static_cast<int>(g_IconPosition.anchor);
     j["iconOffsetX"] = g_IconPosition.offsetXPct;
     j["iconOffsetY"] = g_IconPosition.offsetYPct;
     j["foodUtilityExpiry"] = g_FoodUtilityExpiryEnabled;
     j["allyDownedEnabled"] = g_AllyDownedEnabled;
+    j["tofusToggle"] = g_TofusToggle;
 
     nlohmann::json tts;
     tts["enabled"]       = g_Tts.enabled;
@@ -432,13 +647,30 @@ static void SaveSettings()
     for (const auto& m : g_RaidMechanics)
     {
         nlohmann::json entry;
-        entry["skillID"] = m.skillID;
-        entry["name"]    = m.name;
-        entry["enabled"] = m.enabled;
+        entry["skillID"]    = m.skillID;
+        entry["name"]       = m.name;
+        entry["ttsEnabled"] = m.ttsEnabled;
+        entry["iconEnabled"] = m.iconEnabled;
         mechanics.push_back(entry);
     }
     j["raidMechanics"] = mechanics;
     j["readAllDebuffs"] = g_ReadAllDebuffs;
+
+    // Save built-in mechanic toggles
+    nlohmann::json builtinTts = nlohmann::json::object();
+    nlohmann::json builtinIcon = nlohmann::json::object();
+    for (size_t i = 0; i < g_BuiltinMechanicCount; i++)
+    {
+        unsigned int id = g_BuiltinMechanics[i].skillID;
+        auto ttsIt = g_BuiltinMechanicTts.find(id);
+        auto iconIt = g_BuiltinMechanicIcon.find(id);
+        if (ttsIt != g_BuiltinMechanicTts.end())
+            builtinTts[std::to_string(id)] = ttsIt->second;
+        if (iconIt != g_BuiltinMechanicIcon.end())
+            builtinIcon[std::to_string(id)] = iconIt->second;
+    }
+    j["builtinMechanicTts"] = builtinTts;
+    j["builtinMechanicIcon"] = builtinIcon;
 
     std::string path = GetConfigPath();
     std::filesystem::create_directories(std::filesystem::path(path).parent_path());
@@ -468,6 +700,7 @@ static void LoadSettings()
         g_IconDisplayEnabled = j.value("iconDisplayEnabled", false);
         g_IconSize = j.value("iconSize", 32.0f);
         g_IconSpacing = j.value("iconSpacing", 4.0f);
+        g_IconOpacity = j.value("iconOpacity", 1.0f);
         int iconAnchor = j.value("iconAnchor", static_cast<int>(AnchorPoint::Center));
         iconAnchor = std::clamp(iconAnchor, 0, static_cast<int>(AnchorPoint::COUNT) - 1);
         g_IconPosition.anchor = static_cast<AnchorPoint>(iconAnchor);
@@ -475,6 +708,7 @@ static void LoadSettings()
         g_IconPosition.offsetYPct = j.value("iconOffsetY", -10.0f);
         g_FoodUtilityExpiryEnabled = j.value("foodUtilityExpiry", false);
         g_AllyDownedEnabled = j.value("allyDownedEnabled", false);
+        g_TofusToggle = j.value("tofusToggle", false);
 
         auto& positions = j["positions"];
         if (positions.is_array())
@@ -517,17 +751,38 @@ static void LoadSettings()
             for (const auto& entry : savedMechanics)
             {
                 RaidMechanic m;
-                m.skillID = entry.value("skillID", 0u);
-                m.name    = entry.value("name", "");
-                m.enabled = entry.value("enabled", false);
+                m.skillID    = entry.value("skillID", 0u);
+                m.name       = entry.value("name", "");
+                m.ttsEnabled = entry.value("ttsEnabled", entry.value("enabled", false));
+                m.iconEnabled = entry.value("iconEnabled", entry.value("enabled", false));
                 if (m.skillID != 0 && !m.name.empty())
                     g_RaidMechanics.push_back(m);
+            }
+        }
+
+        // Load built-in mechanic toggles
+        auto& builtinTts = j["builtinMechanicTts"];
+        auto& builtinIcon = j["builtinMechanicIcon"];
+        if (builtinTts.is_object())
+        {
+            for (auto it = builtinTts.begin(); it != builtinTts.end(); ++it)
+            {
+                try { g_BuiltinMechanicTts[static_cast<unsigned int>(std::stoul(it.key()))] = it.value().get<bool>(); } catch (...) {}
+            }
+        }
+        if (builtinIcon.is_object())
+        {
+            for (auto it = builtinIcon.begin(); it != builtinIcon.end(); ++it)
+            {
+                try { g_BuiltinMechanicIcon[static_cast<unsigned int>(std::stoul(it.key()))] = it.value().get<bool>(); } catch (...) {}
             }
         }
     }
     catch (...)
     {
     }
+
+    LoadAllConfiguredIcons();
 }
 
 // ── Mouse Positioning ────────────────────────────────────────────────────────
@@ -624,7 +879,60 @@ static void InitSAPI()
 static void OnCombatEvent(void* aEventArgs)
 {
     auto* cbt = static_cast<const EvCombatData*>(aEventArgs);
-    if (!cbt->ev || !cbt->dst) return;
+    if (!cbt->ev) return;
+
+    // ── Tofu's Toggle — boss death detection ────────────────────────────
+    // Detects Keep Construct specifically by tracking dst name from buff events.
+    // ENTERCOMBAT (1) resets flags, REWARD (10) fires if KC was tracked.
+    if (g_TofusToggle)
+    {
+        uint32_t state = cbt->ev->IsStatechange;
+
+        if (state == 1)
+        {
+            g_BossDeathAnnounced = false;
+            g_InKeepConstructFight = false;
+            unsigned int mapId = g_MumbleData ? g_MumbleData->Context.MapID : 0;
+            char buf[128];
+            snprintf(buf, sizeof(buf), "[BOSS] Entered combat, reset. MapID=%u", mapId);
+            g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
+            return;
+        }
+
+        if (state == 10 && !g_BossDeathAnnounced && g_InKeepConstructFight)
+        {
+            g_BossDeathAnnounced = true;
+            InitSAPI();
+            if (g_TtsReady)
+            {
+                g_pVoice->Speak(L"Tofu, KC is dead, check your gear.", SPF_ASYNC | SPF_PURGEBEFORESPEAK | SPF_IS_NOT_XML, nullptr);
+            }
+            g_API->Log(LOGL_INFO, "GW2Accessibility", "[BOSS] KC death via REWARD");
+            return;
+        }
+    }
+
+    if (!cbt->dst) return;
+
+    // ── Track Keep Construct from buff application events ─────────────────
+    if (g_TofusToggle && !g_InKeepConstructFight)
+    {
+        if (cbt->ev->IsStatechange == 0 && cbt->ev->Buff == 1 && !cbt->ev->IsBuffRemove)
+        {
+            const char* name = cbt->dst->Name;
+            if (name)
+            {
+                std::string dstName(name);
+                if (dstName.find("Keep Construct") != std::string::npos)
+                {
+                    g_InKeepConstructFight = true;
+                    g_API->Log(LOGL_INFO, "GW2Accessibility", "[BOSS] Tracking Keep Construct");
+                }
+            }
+        }
+    }
+
+    if (!cbt->dst) return;
 
     // ── Ally downed tracking (state change event) ────────────────────────────
     if (g_AllyDownedEnabled && cbt->ev->IsStatechange == 5) // CBTS_CHANGEDOWN
@@ -634,15 +942,11 @@ static void OnCombatEvent(void* aEventArgs)
         {
             g_DownedAgents.insert(agentId);
             const char* agentName = cbt->src && cbt->src->Name ? cbt->src->Name : "Ally";
-            char buf[256];
-            snprintf(buf, sizeof(buf), "[COMBAT] [ALLY_DOWNED] agent %llu (%s) downed", (unsigned long long)agentId, agentName);
-            g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
             InitSAPI();
             if (g_TtsReady)
             {
                 std::string speech = std::string(agentName) + " downed";
                 SpeakText(Utf8ToWide(speech.c_str()).c_str());
-                { char buf2[128]; snprintf(buf2, sizeof(buf2), "[COMBAT] [SPOKEN] \"%s\"", speech.c_str()); g_API->Log(LOGL_INFO, "GW2Accessibility", buf2); }
             }
         }
         return;
@@ -652,18 +956,10 @@ static void OnCombatEvent(void* aEventArgs)
     if (cbt->ev->IsStatechange == 3) // CBTS_CHANGEUP
     {
         uint64_t agentId = cbt->ev->SourceAgent;
-        if (g_DownedAgents.erase(agentId))
-        {
-            g_API->Log(LOGL_DEBUG, "GW2Accessibility", "[COMBAT] [ALLY_DOWNED] agent revived, cleared from downed set");
-        }
+        g_DownedAgents.erase(agentId);
         return;
     }
 
-    if (!g_MechanicsAnnounceEnabled && !g_ReadAllDebuffs)
-    {
-        g_API->Log(LOGL_DEBUG, "GW2Accessibility", "[COMBAT] event received but both MechanicsAnnounce and ReadAllDebuffs are disabled — ignored");
-        return;
-    }
     if (!cbt->ev || !cbt->dst)
     {
         g_API->Log(LOGL_DEBUG, "GW2Accessibility", "[COMBAT] event received but ev or dst is null — ignored");
@@ -697,36 +993,60 @@ static void OnCombatEvent(void* aEventArgs)
     bool isRemove = (cbt->ev->IsBuffRemove != 0);
     DWORD now = GetTickCount();
 
-    // Log every buff event received
-    {
-        char buf[512];
-        snprintf(buf, sizeof(buf), "[COMBAT] skill=%u name=%s action=%s value=%d buffDmg=%d result=%d",
-                 skillID,
-                 FetchSkillName(skillID, cbt->skillname).c_str(),
-                 isRemove ? "remove" : "add",
-                 cbt->ev->Value,
-                 cbt->ev->BuffDamage,
-                 cbt->ev->Result);
-        g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
-    }
-
     // ── Track active mechanics for icon display ──────────────────────────────
+    // Runs independently of TTS/Announce settings
     if (isRemove)
     {
         g_ActiveMechanics.erase(skillID);
-        { char buf[128]; snprintf(buf, sizeof(buf), "[COMBAT] icon tracking: removed skill %u from active", skillID); g_API->Log(LOGL_DEBUG, "GW2Accessibility", buf); }
     }
     else
     {
-        for (const auto& m : g_RaidMechanics)
+        bool iconTracked = false;
+        if (IsBuiltinMechanicIconEnabled(skillID))
         {
-            if (m.enabled && m.skillID == skillID)
+            g_ActiveMechanics[skillID] = now;
+            LoadIconTexture(skillID);
+            iconTracked = true;
+        }
+        if (!iconTracked)
+        {
+            for (const auto& m : g_RaidMechanics)
             {
-                g_ActiveMechanics[skillID] = now;
-                LoadIconTexture(skillID);
-                { char buf[256]; snprintf(buf, sizeof(buf), "[COMBAT] icon tracking: added skill %u (%s) to active", skillID, m.name.c_str()); g_API->Log(LOGL_DEBUG, "GW2Accessibility", buf); }
-                break;
+                if (m.iconEnabled && m.skillID == skillID)
+                {
+                    g_ActiveMechanics[skillID] = now;
+                    LoadIconTexture(skillID);
+                    break;
+                }
             }
+        }
+    }
+
+    // ── Gate TTS speech behind settings ──────────────────────────────────────
+    if (!g_MechanicsAnnounceEnabled && !g_ReadAllDebuffs)
+    {
+        return;
+    }
+
+    // Only log unknown skills (not in any known list) for curation
+    {
+        bool isKnown = IsBoon(skillID) || IsCondition(skillID) || (skillID == 47414);
+        if (!isKnown) isKnown = (g_BuiltinBuffNames.find(skillID) != g_BuiltinBuffNames.end());
+        if (!isKnown) isKnown = (g_BuiltinTtsMessages.find(skillID) != g_BuiltinTtsMessages.end());
+        if (!isKnown) isKnown = (FindBuiltinMechanic(skillID) != nullptr);
+        if (!isKnown)
+        {
+            for (const auto& m : g_RaidMechanics)
+            {
+                if ((m.ttsEnabled || m.iconEnabled) && m.skillID == skillID) { isKnown = true; break; }
+            }
+        }
+        if (!isKnown)
+        {
+            const char* name = (cbt->skillname && cbt->skillname[0]) ? cbt->skillname : "(no name from arcdps)";
+            char buf[512];
+            snprintf(buf, sizeof(buf), "[UNKNOWN] skill=%u name=%s action=%s", skillID, name, isRemove ? "remove" : "add");
+            g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
         }
     }
 
@@ -740,11 +1060,10 @@ static void OnCombatEvent(void* aEventArgs)
             {
                 std::string buffName = FetchSkillName(skillID, cbt->skillname);
                 bool isFood = false;
-                // Food: ends with Steak/Flatbread or contains Salad/Soup/Pancake
                 if (buffName.size() >= 6)
                 {
                     std::string end6 = buffName.substr(buffName.size() - 6);
-                    if (end6 == "Steak" || end6 == "steak" || end6 == "adbread") // Flatbread ends with "adbread"
+                    if (end6 == "Steak" || end6 == "steak" || end6 == "adbread")
                         isFood = true;
                 }
                 if (buffName.find("Salad") != std::string::npos ||
@@ -756,45 +1075,27 @@ static void OnCombatEvent(void* aEventArgs)
                     isFood = true;
 
                 const char* speech = isFood ? "food expired" : "utility expired";
-                { char buf[256]; snprintf(buf, sizeof(buf), "[COMBAT] [FOOD/UTILITY] skill %u (%s) expired after %ums — speaking \"%s\"", skillID, buffName.c_str(), now - fuIt->second, speech); g_API->Log(LOGL_INFO, "GW2Accessibility", buf); }
                 InitSAPI();
                 if (g_TtsReady)
                 {
                     SpeakText(Utf8ToWide(speech).c_str());
-                    { char buf[64]; snprintf(buf, sizeof(buf), "[COMBAT] [SPOKEN] \"%s\"", speech); g_API->Log(LOGL_INFO, "GW2Accessibility", buf); }
                 }
             }
             g_TrackedFoodUtility.erase(skillID);
         }
         else
         {
-            // Track new buff applications that aren't boons/conditions/raid mechanics
-            bool isKnown = IsBoon(skillID);
-            if (!isKnown)
-            {
-                auto builtin = g_BuiltinBuffNames.find(skillID);
-                if (builtin != g_BuiltinBuffNames.end())
-                {
-                    static const std::unordered_set<std::string> conditionNames = {
-                        "Bleeding", "Burning", "Confusion", "Poison", "Torment",
-                        "Blind", "Chilled", "Crippled", "Immobile", "Weakness",
-                        "Vulnerability", "Slow", "Fear", "Stun", "Daze", "Taunt", "Battle Scars"
-                    };
-                    if (conditionNames.count(builtin->second))
-                        isKnown = true;
-                }
-            }
+            bool isKnown = IsBoon(skillID) || IsCondition(skillID) || (FindBuiltinMechanic(skillID) != nullptr);
             if (!isKnown)
             {
                 for (const auto& m : g_RaidMechanics)
                 {
-                    if (m.enabled && m.skillID == skillID) { isKnown = true; break; }
+                    if ((m.ttsEnabled || m.iconEnabled) && m.skillID == skillID) { isKnown = true; break; }
                 }
             }
             if (!isKnown)
             {
                 g_TrackedFoodUtility[skillID] = now;
-                { char buf[128]; snprintf(buf, sizeof(buf), "[COMBAT] [FOOD/UTILITY] tracking skill %u (%s)", skillID, FetchSkillName(skillID, cbt->skillname).c_str()); g_API->Log(LOGL_DEBUG, "GW2Accessibility", buf); }
             }
         }
     }
@@ -812,13 +1113,11 @@ static void OnCombatEvent(void* aEventArgs)
                 if (g_TtsReady)
                 {
                     SpeakText(L"Necrosis removed");
-                    g_API->Log(LOGL_INFO, "GW2Accessibility", "[COMBAT] [SPOKEN] \"Necrosis removed\" (Necrosis full removal)");
                 }
             }
             else
             {
                 g_NecrosisStacks = std::max(0, g_NecrosisStacks - 1);
-                { char buf[128]; snprintf(buf, sizeof(buf), "[COMBAT] Necrosis stack decreased to %d (single stack removal)", g_NecrosisStacks); g_API->Log(LOGL_DEBUG, "GW2Accessibility", buf); }
             }
             return;
         }
@@ -842,12 +1141,7 @@ static void OnCombatEvent(void* aEventArgs)
                 {
                     auto w = Utf8ToWide(msg.c_str());
                     SpeakText(w.c_str());
-                    { char buf[256]; snprintf(buf, sizeof(buf), "[COMBAT] [SPOKEN] \"%s\" (Necrosis stacks=%d)", msg.c_str(), g_NecrosisStacks); g_API->Log(LOGL_INFO, "GW2Accessibility", buf); }
                 }
-            }
-            else
-            {
-                { char buf[128]; snprintf(buf, sizeof(buf), "[COMBAT] Necrosis at %d stacks — no speech (not first or 4+)", g_NecrosisStacks); g_API->Log(LOGL_DEBUG, "GW2Accessibility", buf); }
             }
         }
         return;
@@ -857,7 +1151,6 @@ static void OnCombatEvent(void* aEventArgs)
     if (isRemove)
     {
         g_ActiveBuffs.erase(skillID);
-        { char buf[128]; snprintf(buf, sizeof(buf), "[COMBAT] [SKIP] buff removed — cleared from active set for skill %u", skillID); g_API->Log(LOGL_DEBUG, "GW2Accessibility", buf); }
         return;
     }
 
@@ -867,15 +1160,11 @@ static void OnCombatEvent(void* aEventArgs)
     {
         if (now - activeIt->second > g_ActiveBuffTimeout)
         {
-            // No tick received within timeout window — debuff expired naturally
             g_ActiveBuffs.erase(activeIt);
-            { char buf[128]; snprintf(buf, sizeof(buf), "[COMBAT] skill %u expired (no tick for %ums), treating as new application", skillID, now - activeIt->second); g_API->Log(LOGL_DEBUG, "GW2Accessibility", buf); }
         }
         else
         {
-            // Recent tick — this is just a repeat, skip
             g_ActiveBuffs[skillID] = now;
-            { char buf[128]; snprintf(buf, sizeof(buf), "[COMBAT] [SKIP] skill %u already active on player (tick, last seen %ums ago)", skillID, now - activeIt->second); g_API->Log(LOGL_DEBUG, "GW2Accessibility", buf); }
             return;
         }
     }
@@ -883,64 +1172,69 @@ static void OnCombatEvent(void* aEventArgs)
 
     std::string text;
 
-    // Check for built-in custom TTS message (action-oriented)
+    // Check for built-in TTS message (action-oriented)
     auto ttsMsg = g_BuiltinTtsMessages.find(skillID);
     if (ttsMsg != g_BuiltinTtsMessages.end())
     {
         text = ttsMsg->second;
-        { char buf[256]; snprintf(buf, sizeof(buf), "[COMBAT] matched built-in TTS message: \"%s\"", text.c_str()); g_API->Log(LOGL_DEBUG, "GW2Accessibility", buf); }
     }
     else
     {
-        if (g_MechanicsAnnounceEnabled)
+        // Check built-in mechanics with TTS enabled
+        if (text.empty())
+        {
+            const BuiltinMechanic* bm = FindBuiltinMechanic(skillID);
+            if (bm && IsBuiltinMechanicTtsEnabled(skillID))
+            {
+                text = bm->ttsMsg ? bm->ttsMsg : bm->name;
+            }
+        }
+
+        // Check user mechanics with TTS enabled
+        if (text.empty() && g_MechanicsAnnounceEnabled)
         {
             for (const auto& m : g_RaidMechanics)
             {
-                if (m.enabled && m.skillID == skillID)
+                if (m.ttsEnabled && m.skillID == skillID)
                 {
                     text = m.name;
-                    { char buf[256]; snprintf(buf, sizeof(buf), "[COMBAT] matched raid mechanic #%u: \"%s\"", skillID, text.c_str()); g_API->Log(LOGL_DEBUG, "GW2Accessibility", buf); }
                     break;
                 }
             }
         }
 
-        // In "Read All Debuffs" mode, skip known boons — only speak conditions/debuffs
+        // In "Read All Debuffs" mode, only speak known conditions — skip everything else
         if (text.empty() && g_ReadAllDebuffs)
         {
-            if (IsBoon(skillID))
+            if (!IsCondition(skillID))
             {
-                { char buf[128]; snprintf(buf, sizeof(buf), "[COMBAT] [SKIP] known boon (skill %u), filtered out", skillID); g_API->Log(LOGL_DEBUG, "GW2Accessibility", buf); }
                 return;
             }
             text = FetchSkillName(skillID, cbt->skillname);
-            { char buf[256]; snprintf(buf, sizeof(buf), "[COMBAT] ReadAllDebuffs: resolved name \"%s\" for skill %u", text.c_str(), skillID); g_API->Log(LOGL_DEBUG, "GW2Accessibility", buf); }
         }
     }
 
     if (text.empty())
     {
-        { char buf[256]; snprintf(buf, sizeof(buf), "[COMBAT] [SKIP] no name resolved for skill %u (not in mechanics list, not in ReadAllDebuffs mode, no built-in message)", skillID); g_API->Log(LOGL_DEBUG, "GW2Accessibility", buf); }
         return;
     }
 
     InitSAPI();
     if (!g_TtsReady)
     {
-        g_API->Log(LOGL_DEBUG, "GW2Accessibility", "[COMBAT] [SKIP] SAPI not ready");
         return;
     }
     auto w = Utf8ToWide(text.c_str());
     SpeakText(w.c_str());
-    { char buf[256]; snprintf(buf, sizeof(buf), "[COMBAT] [SPOKEN] \"%s\"", text.c_str()); g_API->Log(LOGL_INFO, "GW2Accessibility", buf); }
 }
 
-static std::string First5(const char* name)
+static std::string FirstName(const char* name)
 {
     if (!name || !*name) return "";
     std::string s(name);
-    if (s.size() > 5)
-        s.resize(5);
+    size_t space = s.find(' ');
+    if (space != std::string::npos)
+        s.resize(space);
     return s;
 }
 
@@ -966,14 +1260,72 @@ static const char* ChannelName(MessageType t)
     }
 }
 
+static std::string StripChatLinks(const char* text)
+{
+    if (!text) return "";
+    std::string result;
+    size_t len = strlen(text);
+    size_t i = 0;
+    while (i < len)
+    {
+        if (i + 1 < len && text[i] == '[' && text[i + 1] == '&')
+        {
+            const char* end = strchr(text + i + 2, ']');
+            if (end)
+            {
+                i = static_cast<size_t>(end - text) + 1;
+                continue;
+            }
+        }
+        result += text[i];
+        i++;
+    }
+    return result;
+}
+
 static void OnChatMessage(void* aEventArgs)
 {
-    if (!g_Tts.enabled)
+    if (!g_Tts.enabled && !g_TofusToggle)
     {
         g_API->Log(LOGL_DEBUG, "GW2Accessibility", "[CHAT] event received but TTS is disabled — ignored");
         return;
     }
     auto* msg = static_cast<const Message*>(aEventArgs);
+
+    // ── Tofu's Toggle — detect boss death via "defeated" chat message ───────
+    if (g_TofusToggle && g_InKeepConstructFight)
+    {
+        const char* chatText = nullptr;
+        switch (msg->Type)
+        {
+            case Party: case Squad: case Map: case Local:
+                chatText = msg->Local.Content; break;
+            case Whisper: chatText = msg->Whisper.Content; break;
+            case Guild: chatText = msg->Guild.Base.Content; break;
+            case SquadBroadcast: case SquadMessage: chatText = msg->SquadMessage; break;
+            default: break;
+        }
+        if (chatText)
+        {
+            std::string t(chatText);
+            if (t.find("defeated") != std::string::npos || t.find("Defeated") != std::string::npos)
+            {
+                if (!g_BossDeathAnnounced)
+                {
+                    g_BossDeathAnnounced = true;
+                    InitSAPI();
+                    if (g_TtsReady)
+                    {
+                        g_pVoice->Speak(L"Tofu, KC is dead, check your gear.", SPF_ASYNC | SPF_PURGEBEFORESPEAK | SPF_IS_NOT_XML, nullptr);
+                    }
+                    g_API->Log(LOGL_INFO, "GW2Accessibility", "[BOSS] Boss death via chat 'defeated' message");
+                }
+                return;
+            }
+        }
+    }
+
+    if (!g_Tts.enabled) return;
 
     InitSAPI();
     if (!g_TtsReady)
@@ -1001,7 +1353,7 @@ static void OnChatMessage(void* aEventArgs)
             if (msg->Flags & Party_IsFromCommander)
                 ttsText = "Party comm " + std::string(text);
             else
-                ttsText = "Party " + First5(name) + " " + text;
+                ttsText = "Party " + FirstName(name) + " " + text;
             break;
         }
 
@@ -1014,7 +1366,7 @@ static void OnChatMessage(void* aEventArgs)
             if (msg->Flags & Squad_IsFromCommander)
                 ttsText = "Squad comm " + std::string(text);
             else
-                ttsText = "Squad " + First5(name) + " " + text;
+                ttsText = "Squad " + FirstName(name) + " " + text;
             break;
         }
 
@@ -1024,7 +1376,7 @@ static void OnChatMessage(void* aEventArgs)
             text = msg->Local.Content;
             name = msg->Local.CharacterName;
             if (!text || !*text) { wasIgnored = true; ignoreReason = "empty content"; break; }
-            ttsText = "Map " + First5(name) + " " + text;
+            ttsText = "Map " + FirstName(name) + " " + text;
             break;
         }
 
@@ -1034,7 +1386,7 @@ static void OnChatMessage(void* aEventArgs)
             text = msg->Local.Content;
             name = msg->Local.CharacterName;
             if (!text || !*text) { wasIgnored = true; ignoreReason = "empty content"; break; }
-            ttsText = "Local " + First5(name) + " " + text;
+            ttsText = "Local " + FirstName(name) + " " + text;
             break;
         }
 
@@ -1045,7 +1397,7 @@ static void OnChatMessage(void* aEventArgs)
             text = msg->Whisper.Content;
             name = msg->Whisper.CharacterName;
             if (!text || !*text) { wasIgnored = true; ignoreReason = "empty content"; break; }
-            ttsText = "Whisper " + First5(name) + " " + text;
+            ttsText = "Whisper " + FirstName(name) + " " + text;
             break;
         }
 
@@ -1064,7 +1416,7 @@ static void OnChatMessage(void* aEventArgs)
             text = msg->Guild.Base.Content;
             name = msg->Guild.Base.CharacterName;
             if (!text || !*text) { wasIgnored = true; ignoreReason = "empty content"; break; }
-            ttsText = "Guild " + First5(name) + " " + text;
+            ttsText = "Guild " + FirstName(name) + " " + text;
             break;
         }
 
@@ -1099,7 +1451,7 @@ static void OnChatMessage(void* aEventArgs)
             text = msg->TeamPvP.Content;
             name = msg->TeamPvP.CharacterName;
             if (!text || !*text) { wasIgnored = true; ignoreReason = "empty content"; break; }
-            ttsText = "Team PvP " + First5(name) + " " + text;
+            ttsText = "Team PvP " + FirstName(name) + " " + text;
             break;
         }
 
@@ -1109,7 +1461,7 @@ static void OnChatMessage(void* aEventArgs)
             text = msg->TeamWvW.Base.Content;
             name = msg->TeamWvW.Base.CharacterName;
             if (!text || !*text) { wasIgnored = true; ignoreReason = "empty content"; break; }
-            ttsText = "Team WvW " + First5(name) + " " + text;
+            ttsText = "Team WvW " + FirstName(name) + " " + text;
             break;
         }
 
@@ -1118,7 +1470,7 @@ static void OnChatMessage(void* aEventArgs)
             if (!g_Tts.emote) { wasIgnored = true; ignoreReason = "Emote TTS disabled"; break; }
             name = msg->Emote.CharacterName;
             if (!name || !*name) { wasIgnored = true; ignoreReason = "empty character name"; break; }
-            ttsText = "Emote " + First5(name);
+            ttsText = "Emote " + FirstName(name);
             break;
         }
 
@@ -1127,7 +1479,7 @@ static void OnChatMessage(void* aEventArgs)
             if (!g_Tts.emoteCustom) { wasIgnored = true; ignoreReason = "EmoteCustom TTS disabled"; break; }
             name = msg->EmoteCustom.CharacterName;
             if (!name || !*name) { wasIgnored = true; ignoreReason = "empty character name"; break; }
-            ttsText = "Custom emote " + First5(name);
+            ttsText = "Custom emote " + FirstName(name);
             break;
         }
 
@@ -1156,6 +1508,9 @@ static void OnChatMessage(void* aEventArgs)
         g_API->Log(LOGL_DEBUG, "GW2Accessibility", buf);
         return;
     }
+
+    // Strip chat links ([&...]) from TTS output
+    ttsText = StripChatLinks(ttsText.c_str());
 
     if (ttsText.empty())
     {
@@ -1201,6 +1556,15 @@ static void SetupImGui()
 static void OnRender()
 {
     SetupImGui();
+
+    // Pre-fetch all built-in mechanic icons 30s after load
+    if (!g_PreloadDone && g_LoadTime != 0 && GetTickCount() - g_LoadTime >= 30000)
+    {
+        for (size_t i = 0; i < g_BuiltinMechanicCount; i++)
+            LoadIconTexture(g_BuiltinMechanics[i].skillID);
+        g_PreloadDone = true;
+    }
+
     if (g_CrosshairEnabled)
     {
         ImDrawList* dl = ImGui::GetOverlayDrawList();
@@ -1210,6 +1574,16 @@ static void OnRender()
         float thickness = 2.0f;
         dl->AddLine(ImVec2(0.0f, mousePos.y), ImVec2(displaySize.x, mousePos.y), color, thickness);
         dl->AddLine(ImVec2(mousePos.x, 0.0f), ImVec2(mousePos.x, displaySize.y), color, thickness);
+    }
+
+    if (g_TestIconEnabled && g_IconDisplayEnabled)
+    {
+        LoadIconTexture(47164);
+        g_ActiveMechanics[47164] = GetTickCount();
+    }
+    else if (!g_TestIconEnabled)
+    {
+        g_ActiveMechanics.erase(47164);
     }
 
     if (g_IconDisplayEnabled && !g_ActiveMechanics.empty())
@@ -1253,7 +1627,8 @@ static void OnRender()
             {
                 ImVec2 pMin(x, y);
                 ImVec2 pMax(x + g_IconSize, y + g_IconSize);
-                dl->AddImage(tex, pMin, pMax);
+                ImU32 tint = ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, g_IconOpacity));
+                dl->AddImage(tex, pMin, pMax, ImVec2(0, 0), ImVec2(1, 1), tint);
             }
             x += g_IconSize + g_IconSpacing;
         }
@@ -1262,222 +1637,328 @@ static void OnRender()
 
 // ── Options UI ───────────────────────────────────────────────────────────────
 
+static void OnMechanicsWindowRender()
+{
+    SetupImGui();
+    bool changed = false;
+
+    if (!g_ShowMechanicsWindow)
+        return;
+
+    if (!ImGui::Begin("Raid Mechanics", &g_ShowMechanicsWindow))
+    {
+        ImGui::End();
+        return;
+    }
+
+    // ── Built-in Mechanics ──────────────────────────────────────────────────
+    ImGui::TextUnformatted("Built-in Mechanics");
+    ImGui::Separator();
+
+    for (size_t i = 0; i < g_BuiltinMechanicCount; i++)
+    {
+        const BuiltinMechanic& bm = g_BuiltinMechanics[i];
+        ImGui::PushID(static_cast<int>(bm.skillID));
+
+        bool ttsOn = IsBuiltinMechanicTtsEnabled(bm.skillID);
+        bool iconOn = IsBuiltinMechanicIconEnabled(bm.skillID);
+
+        if (ImGui::Checkbox("TTS", &ttsOn))
+        {
+            g_BuiltinMechanicTts[bm.skillID] = ttsOn;
+            changed = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::Checkbox("Icon", &iconOn))
+        {
+            g_BuiltinMechanicIcon[bm.skillID] = iconOn;
+            changed = true;
+        }
+        ImGui::SameLine();
+        ImGui::Text("%s (%u)", bm.name, bm.skillID);
+
+        ImGui::PopID();
+    }
+
+    // ── Custom Mechanics ────────────────────────────────────────────────────
+    ImGui::Dummy(ImVec2(0, 8));
+    ImGui::TextUnformatted("Custom Mechanics");
+    ImGui::Separator();
+
+    if (ImGui::Button("Add Mechanic"))
+    {
+        RaidMechanic m;
+        m.name = "New Mechanic";
+        m.skillID = 0;
+        m.ttsEnabled = true;
+        m.iconEnabled = true;
+        g_RaidMechanics.push_back(m);
+        changed = true;
+    }
+
+    ImGui::SameLine();
+    if (ImGui::Button("Add Example: Dhuum Shackles"))
+    {
+        RaidMechanic m;
+        m.skillID = 50553;
+        m.name = "Shackles";
+        m.ttsEnabled = true;
+        m.iconEnabled = true;
+        g_RaidMechanics.push_back(m);
+        changed = true;
+    }
+
+    ImGui::Separator();
+
+    int toRemove = -1;
+    for (size_t i = 0; i < g_RaidMechanics.size(); i++)
+    {
+        auto& m = g_RaidMechanics[i];
+        ImGui::PushID(static_cast<int>(i));
+
+        changed |= ImGui::Checkbox("TTS", &m.ttsEnabled);
+        ImGui::SameLine();
+        changed |= ImGui::Checkbox("Icon", &m.iconEnabled);
+        ImGui::SameLine();
+
+        char nameBuf[128] = {};
+        strncpy_s(nameBuf, m.name.c_str(), sizeof(nameBuf) - 1);
+        if (ImGui::InputText("Name", nameBuf, sizeof(nameBuf)))
+        {
+            m.name = nameBuf;
+            changed = true;
+        }
+
+        ImGui::SameLine();
+        int skillID = static_cast<int>(m.skillID);
+        if (ImGui::InputInt("Skill ID", &skillID, 0, 0))
+        {
+            m.skillID = static_cast<unsigned int>(std::max(0, skillID));
+            changed = true;
+        }
+
+        ImGui::SameLine();
+        if (ImGui::Button("Remove"))
+        {
+            toRemove = static_cast<int>(i);
+            changed = true;
+        }
+
+        ImGui::PopID();
+    }
+
+    if (toRemove >= 0)
+        g_RaidMechanics.erase(g_RaidMechanics.begin() + toRemove);
+
+    ImGui::Separator();
+    ImGui::TextDisabled("Toggle TTS and/or Icon alerts per mechanic.");
+    ImGui::TextDisabled("Skill IDs come from ArcdpsIntegration combat events.");
+
+    ImGui::End();
+
+    if (changed)
+        SaveSettings();
+}
+
 static void OnOptionsRender()
 {
     SetupImGui();
     bool changed = false;
 
-    // ── Mouse Position Section ──
-    ImGui::TextUnformatted("Mouse Position");
-    ImGui::Separator();
-
-    changed |= ImGui::Checkbox("Enable", &g_Enabled);
-    changed |= ImGui::Checkbox("Hold Mode", &g_HoldMode);
-    ImGui::TextDisabled(g_HoldMode
-        ? "Hold keybind to go to Position B, release to return to Position A"
-        : "Press keybind to toggle between Position A and B");
-
-    static int s_EditingSlot = 0;
-    const char* slotNames[] = { "Position A (toggle off)", "Position B (toggle on)" };
-    ImGui::Combo("Edit Slot", &s_EditingSlot, slotNames, 2);
-
-    ImGui::Indent();
-    ConfigPosition& pos = g_Positions[s_EditingSlot];
-
-    int anchorIdx = static_cast<int>(pos.anchor);
-    if (ImGui::Combo("Anchor", &anchorIdx, g_AnchorNames,
-                     static_cast<int>(AnchorPoint::COUNT)))
-    {
-        pos.anchor = static_cast<AnchorPoint>(anchorIdx);
-        changed = true;
-    }
-
-    changed |= ImGui::SliderFloat("Offset X %", &pos.offsetXPct, -50.0f, 50.0f, "%.1f%%");
-    changed |= ImGui::SliderFloat("Offset Y %", &pos.offsetYPct, -50.0f, 50.0f, "%.1f%%");
-
-    if (ImGui::Button("Test"))
-    {
-        if (g_Enabled)
-            MoveToPosition(pos);
-    }
-    ImGui::Unindent();
-
-    ImGui::Separator();
-    if (ImGui::Button("Toggle Now"))
-    {
-        if (g_Enabled)
-            ToggleMousePosition();
-    }
-
-    ImGui::SameLine();
-    {
-        int x, y;
-        GetTargetPosition(g_Positions[g_ActivePosition], x, y);
-        ImGui::TextDisabled("Active: %s (%d, %d)",
-            g_AnchorNames[static_cast<int>(g_Positions[g_ActivePosition].anchor)], x, y);
-    }
-
-    ImGui::Separator();
-    changed |= ImGui::Checkbox("Show Crosshair", &g_CrosshairEnabled);
-    if (g_CrosshairEnabled)
+    // ── Motor ─────────────────────────────────────────────────────────────────
+    if (ImGui::CollapsingHeader("Motor", ImGuiTreeNodeFlags_DefaultOpen))
     {
         ImGui::Indent();
-        changed |= ImGui::ColorEdit4("Crosshair Color", g_CrosshairColor);
-        ImGui::Unindent();
-    }
 
-    // ── Active Mechanic Icons Section ──
-    ImGui::Dummy(ImVec2(0, 8));
-    ImGui::TextUnformatted("Active Mechanic Icons");
-    ImGui::Separator();
+        // ── Mouse Position ──
+        ImGui::TextUnformatted("Mouse Position");
+        ImGui::Separator();
 
-    changed |= ImGui::Checkbox("Show Active Mechanic Icons", &g_IconDisplayEnabled);
-    if (g_IconDisplayEnabled)
-    {
+        changed |= ImGui::Checkbox("Enable", &g_Enabled);
+        changed |= ImGui::Checkbox("Hold Mode", &g_HoldMode);
+        ImGui::TextDisabled(g_HoldMode
+            ? "Hold keybind to go to Position B, release to return to Position A"
+            : "Press keybind to toggle between Position A and B");
+
+        static int s_EditingSlot = 0;
+        const char* slotNames[] = { "Position A (toggle off)", "Position B (toggle on)" };
+        ImGui::Combo("Edit Slot", &s_EditingSlot, slotNames, 2);
+
         ImGui::Indent();
-        changed |= ImGui::SliderFloat("Icon Size", &g_IconSize, 16.0f, 128.0f, "%.0f");
-        changed |= ImGui::SliderFloat("Icon Spacing", &g_IconSpacing, 0.0f, 32.0f, "%.0f");
+        ConfigPosition& pos = g_Positions[s_EditingSlot];
 
-        int iconAnchorIdx = static_cast<int>(g_IconPosition.anchor);
-        if (ImGui::Combo("Anchor", &iconAnchorIdx, g_AnchorNames,
+        int anchorIdx = static_cast<int>(pos.anchor);
+        char mouseAnchorLabel[64];
+        snprintf(mouseAnchorLabel, sizeof(mouseAnchorLabel), "Position %s Anchor", s_EditingSlot == 0 ? "A" : "B");
+        if (ImGui::Combo(mouseAnchorLabel, &anchorIdx, g_AnchorNames,
                          static_cast<int>(AnchorPoint::COUNT)))
         {
-            g_IconPosition.anchor = static_cast<AnchorPoint>(iconAnchorIdx);
+            pos.anchor = static_cast<AnchorPoint>(anchorIdx);
             changed = true;
         }
 
-        changed |= ImGui::SliderFloat("Offset X %", &g_IconPosition.offsetXPct, -50.0f, 50.0f, "%.1f%%");
-        changed |= ImGui::SliderFloat("Offset Y %", &g_IconPosition.offsetYPct, -50.0f, 50.0f, "%.1f%%");
-        ImGui::Unindent();
-    }
+        char mouseLabelX[64], mouseLabelY[64];
+        snprintf(mouseLabelX, sizeof(mouseLabelX), "Position %s Offset X %%", s_EditingSlot == 0 ? "A" : "B");
+        snprintf(mouseLabelY, sizeof(mouseLabelY), "Position %s Offset Y %%", s_EditingSlot == 0 ? "A" : "B");
+        changed |= ImGui::SliderFloat(mouseLabelX, &pos.offsetXPct, -50.0f, 50.0f, "%.1f%%");
+        changed |= ImGui::SliderFloat(mouseLabelY, &pos.offsetYPct, -50.0f, 50.0f, "%.1f%%");
 
-    // ── Alerts Section ──
-    ImGui::Dummy(ImVec2(0, 8));
-    ImGui::TextUnformatted("Alerts");
-    ImGui::Separator();
-
-    changed |= ImGui::Checkbox("Announce Food/Utility Expiry", &g_FoodUtilityExpiryEnabled);
-    ImGui::TextDisabled("Speaks \"food expired\" or \"utility expired\" when a buff expires after 1+ minute.");
-
-    changed |= ImGui::Checkbox("Announce Ally Downed", &g_AllyDownedEnabled);
-    ImGui::TextDisabled("Speaks \"PlayerName downed\" when a squad member goes downed.");
-
-    // ── Chat TTS Section ──
-    ImGui::Dummy(ImVec2(0, 8));
-    ImGui::TextUnformatted("Chat TTS");
-    ImGui::Separator();
-
-    changed |= ImGui::Checkbox("Enable TTS", &g_Tts.enabled);
-
-    if (g_Tts.enabled)
-    {
-        ImGui::Indent();
-        ImGui::TextUnformatted("Speak for:");
-        changed |= ImGui::Checkbox("Party",       &g_Tts.party);
-        changed |= ImGui::Checkbox("Squad",        &g_Tts.squad);
-        changed |= ImGui::Checkbox("Whisper",      &g_Tts.whisper);
-        changed |= ImGui::Checkbox("Squad Broadcast", &g_Tts.squadBroadcast);
-        changed |= ImGui::Checkbox("Map",          &g_Tts.map);
-        changed |= ImGui::Checkbox("Local Say",    &g_Tts.local);
-        changed |= ImGui::Checkbox("Guild",         &g_Tts.guild);
-        changed |= ImGui::Checkbox("Guild MotD",   &g_Tts.guildMotD);
-        changed |= ImGui::Checkbox("Error",         &g_Tts.error);
-        changed |= ImGui::Checkbox("Team PvP",      &g_Tts.teamPvP);
-        changed |= ImGui::Checkbox("Team WvW",      &g_Tts.teamWvW);
-        changed |= ImGui::Checkbox("Emote",         &g_Tts.emote);
-        changed |= ImGui::Checkbox("Emote Custom",  &g_Tts.emoteCustom);
-
-        if (ImGui::Button("Test TTS"))
+        if (ImGui::Button("Test"))
         {
-            InitSAPI();
-            if (g_TtsReady)
-                SpeakText(L"Chat TTS is working. Testing one two three.");
+            if (g_Enabled)
+                MoveToPosition(pos);
         }
-
-        ImGui::Dummy(ImVec2(0, 4));
-        ImGui::TextDisabled("Requires \"Events: Chat\" addon by Vonsh.1427");
-        ImGui::TextDisabled("to be installed and enabled.");
         ImGui::Unindent();
-    }
 
-    // ── Raid Mechanics TTS Section ──
-    ImGui::Dummy(ImVec2(0, 8));
-    ImGui::TextUnformatted("Raid Mechanic Alerts");
-    ImGui::Separator();
-
-    changed |= ImGui::Checkbox("Enable Raid Mechanic Alerts", &g_MechanicsAnnounceEnabled);
-    changed |= ImGui::Checkbox("Read All Debuffs on Player", &g_ReadAllDebuffs);
-    if (g_ReadAllDebuffs)
-        ImGui::TextDisabled("Only conditions/debuffs are spoken (boons are filtered out).");
-    ImGui::TextDisabled("Requires \"Arcdps Integration\" addon (bundled with Nexus).");
-
-    if (g_MechanicsAnnounceEnabled || g_ReadAllDebuffs)
-    {
-        ImGui::Indent();
-
-        if (ImGui::Button("Add Mechanic"))
+        ImGui::Separator();
+        if (ImGui::Button("Toggle Now"))
         {
-            RaidMechanic m;
-            m.name = "New Mechanic";
-            g_RaidMechanics.push_back(m);
-            changed = true;
+            if (g_Enabled)
+                ToggleMousePosition();
         }
 
         ImGui::SameLine();
-        if (ImGui::Button("Add Example: Dhuum Shackles"))
         {
-            RaidMechanic m;
-            m.skillID = 50553;
-            m.name = "Shackles";
-            m.enabled = true;
-            g_RaidMechanics.push_back(m);
-            changed = true;
+            int x, y;
+            GetTargetPosition(g_Positions[g_ActivePosition], x, y);
+            ImGui::TextDisabled("Active: %s (%d, %d)",
+                g_AnchorNames[static_cast<int>(g_Positions[g_ActivePosition].anchor)], x, y);
         }
 
-        int toRemove = -1;
-        for (size_t i = 0; i < g_RaidMechanics.size(); i++)
+        // ── Crosshair ──
+        ImGui::Dummy(ImVec2(0, 4));
+        changed |= ImGui::Checkbox("Show Crosshair", &g_CrosshairEnabled);
+        if (g_CrosshairEnabled)
         {
-            auto& m = g_RaidMechanics[i];
-            ImGui::PushID(static_cast<int>(i));
-
-            char nameBuf[128] = {};
-            strncpy_s(nameBuf, m.name.c_str(), sizeof(nameBuf) - 1);
-            if (ImGui::InputText("Name", nameBuf, sizeof(nameBuf)))
-            {
-                m.name = nameBuf;
-                changed = true;
-            }
-
-            int skillID = static_cast<int>(m.skillID);
-            if (ImGui::InputInt("Skill ID", &skillID))
-            {
-                m.skillID = static_cast<unsigned int>(std::max(0, skillID));
-                changed = true;
-            }
-
-            changed |= ImGui::Checkbox("Enabled", &m.enabled);
-
-            if (ImGui::Button("Remove"))
-            {
-                toRemove = static_cast<int>(i);
-                changed = true;
-            }
-
-            ImGui::PopID();
-            ImGui::Dummy(ImVec2(0, 2));
+            ImGui::Indent();
+            changed |= ImGui::ColorEdit4("Crosshair Color", g_CrosshairColor);
+            ImGui::Unindent();
         }
 
-        if (toRemove >= 0)
-            g_RaidMechanics.erase(g_RaidMechanics.begin() + toRemove);
-
-        ImGui::TextDisabled("Enter Skill IDs from the GW2 API or combat logs.");
-        ImGui::TextDisabled("Mechanics are announced each time they are applied to the player.");
         ImGui::Unindent();
+        ImGui::Dummy(ImVec2(0, 4));
     }
 
-    if (g_ReadAllDebuffs && !g_MechanicsAnnounceEnabled)
+    // ── Auditory ──────────────────────────────────────────────────────────────
+    if (ImGui::CollapsingHeader("Auditory", ImGuiTreeNodeFlags_DefaultOpen))
     {
-        ImGui::TextDisabled("All debuff mode enabled — every debuff applied to you will be spoken.");
+        ImGui::Indent();
+
+        // ── Chat TTS ──
+        ImGui::TextUnformatted("Chat TTS");
+        ImGui::Separator();
+
+        changed |= ImGui::Checkbox("Enable TTS", &g_Tts.enabled);
+
+        if (g_Tts.enabled)
+        {
+            ImGui::Indent();
+            ImGui::TextUnformatted("Speak for:");
+            changed |= ImGui::Checkbox("Party",       &g_Tts.party);
+            changed |= ImGui::Checkbox("Squad",        &g_Tts.squad);
+            changed |= ImGui::Checkbox("Whisper",      &g_Tts.whisper);
+            changed |= ImGui::Checkbox("Squad Broadcast", &g_Tts.squadBroadcast);
+            changed |= ImGui::Checkbox("Map",          &g_Tts.map);
+            changed |= ImGui::Checkbox("Local Say",    &g_Tts.local);
+            changed |= ImGui::Checkbox("Guild",         &g_Tts.guild);
+            changed |= ImGui::Checkbox("Guild MotD",   &g_Tts.guildMotD);
+            changed |= ImGui::Checkbox("Error",         &g_Tts.error);
+            changed |= ImGui::Checkbox("Team PvP",      &g_Tts.teamPvP);
+            changed |= ImGui::Checkbox("Team WvW",      &g_Tts.teamWvW);
+            changed |= ImGui::Checkbox("Emote",         &g_Tts.emote);
+            changed |= ImGui::Checkbox("Emote Custom",  &g_Tts.emoteCustom);
+
+            if (ImGui::Button("Test TTS"))
+            {
+                InitSAPI();
+                if (g_TtsReady)
+                    SpeakText(L"Chat TTS is working. Testing one two three.");
+            }
+
+            ImGui::Dummy(ImVec2(0, 4));
+            ImGui::TextDisabled("Requires \"Events: Chat\" addon by Vonsh.1427");
+            ImGui::TextDisabled("to be installed and enabled.");
+            ImGui::Unindent();
+        }
+
+        // ── Alerts (downed, food, tofu) ──
+        ImGui::Dummy(ImVec2(0, 4));
+        ImGui::TextUnformatted("Alerts");
+        ImGui::Separator();
+
+        changed |= ImGui::Checkbox("Announce Ally Downed", &g_AllyDownedEnabled);
+        ImGui::TextDisabled("Speaks \"PlayerName downed\" when a squad member goes downed.");
+
+        changed |= ImGui::Checkbox("Announce Food/Utility Expiry", &g_FoodUtilityExpiryEnabled);
+        ImGui::TextDisabled("Speaks \"food expired\" or \"utility expired\" when a buff expires after 1+ minute.");
+
+        changed |= ImGui::Checkbox("Announce Boss Death (Keep Construct)", &g_TofusToggle);
+        if (g_TofusToggle)
+            ImGui::TextDisabled("Speaks \"Tofu, KC is dead, check your gear.\" when Keep Construct dies.");
+
+        // ── Raid Mechanics TTS ──
+        ImGui::Dummy(ImVec2(0, 4));
+        ImGui::TextUnformatted("Raid Mechanic Alerts");
+        ImGui::Separator();
+
+        changed |= ImGui::Checkbox("Enable Raid Mechanic Alerts", &g_MechanicsAnnounceEnabled);
+        changed |= ImGui::Checkbox("Read All Debuffs on Player", &g_ReadAllDebuffs);
+        if (g_ReadAllDebuffs)
+            ImGui::TextDisabled("Only conditions/debuffs are spoken (boons are filtered out).");
+        ImGui::TextDisabled("Requires \"Arcdps Integration\" addon (bundled with Nexus).");
+
+        if (g_MechanicsAnnounceEnabled || g_ReadAllDebuffs)
+        {
+            ImGui::Indent();
+            if (ImGui::Button("Open Mechanics"))
+            {
+                g_ShowMechanicsWindow = true;
+            }
+            ImGui::Unindent();
+        }
+
+        if (g_ReadAllDebuffs && !g_MechanicsAnnounceEnabled)
+        {
+            ImGui::TextDisabled("All debuff mode enabled — every debuff applied to you will be spoken.");
+        }
+
+        ImGui::Unindent();
+        ImGui::Dummy(ImVec2(0, 4));
+    }
+
+    // ── Visual ────────────────────────────────────────────────────────────────
+    if (ImGui::CollapsingHeader("Visual", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        ImGui::Indent();
+
+        ImGui::TextUnformatted("Active Mechanic Icons");
+        ImGui::Separator();
+
+        changed |= ImGui::Checkbox("Show Active Mechanic Icons", &g_IconDisplayEnabled);
+        if (g_IconDisplayEnabled)
+        {
+            ImGui::Indent();
+            changed |= ImGui::SliderFloat("Icon Size", &g_IconSize, 16.0f, 128.0f, "%.0f");
+            changed |= ImGui::SliderFloat("Icon Spacing", &g_IconSpacing, 0.0f, 32.0f, "%.0f");
+            changed |= ImGui::SliderFloat("Opacity", &g_IconOpacity, 0.0f, 1.0f, "%.2f");
+
+            int iconAnchorIdx = static_cast<int>(g_IconPosition.anchor);
+            if (ImGui::Combo("Icon Anchor", &iconAnchorIdx, g_AnchorNames, static_cast<int>(AnchorPoint::COUNT)))
+            {
+                g_IconPosition.anchor = static_cast<AnchorPoint>(iconAnchorIdx);
+                changed = true;
+            }
+
+            changed |= ImGui::SliderFloat("Icon Offset X %", &g_IconPosition.offsetXPct, -50.0f, 50.0f, "%.1f%%");
+            changed |= ImGui::SliderFloat("Icon Offset Y %", &g_IconPosition.offsetYPct, -50.0f, 50.0f, "%.1f%%");
+
+            ImGui::Checkbox("Test Icon (Soul Shackle)", &g_TestIconEnabled);
+
+            ImGui::Unindent();
+        }
+
+        ImGui::Unindent();
+        ImGui::Dummy(ImVec2(0, 4));
     }
 
     ImGui::Separator();
@@ -1503,9 +1984,13 @@ void AddonLoad(AddonAPI_t* aAPI)
 
     g_API->GUI_Register(RT_Render, OnRender);
     g_API->GUI_Register(RT_OptionsRender, OnOptionsRender);
+    g_API->GUI_Register(RT_Render, OnMechanicsWindowRender);
     g_API->Events_Subscribe(GW2_CHAT_EVENT, OnChatMessage);
     g_API->Events_Subscribe(EV_ARCDPS_COMBAT_SQUAD, OnCombatEvent);
     g_API->Events_Subscribe(EV_ARCDPS_COMBAT_LOCAL, OnCombatEvent);
+
+    g_LoadTime = GetTickCount();
+    g_PreloadDone = false;
 }
 
 void AddonUnload()
@@ -1517,6 +2002,7 @@ void AddonUnload()
         g_API->InputBinds_Deregister("GW2ACCESSIBILITY_MOUSE_TOGGLE");
         g_API->GUI_Deregister(OnRender);
         g_API->GUI_Deregister(OnOptionsRender);
+        g_API->GUI_Deregister(OnMechanicsWindowRender);
         g_API->Events_Unsubscribe(GW2_CHAT_EVENT, OnChatMessage);
         g_API->Events_Unsubscribe(EV_ARCDPS_COMBAT_SQUAD, OnCombatEvent);
         g_API->Events_Unsubscribe(EV_ARCDPS_COMBAT_LOCAL, OnCombatEvent);
