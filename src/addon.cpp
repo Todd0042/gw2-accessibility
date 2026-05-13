@@ -17,7 +17,9 @@
 #include <deque>
 #include <unordered_map>
 #include <unordered_set>
+#include <mutex>
 #include <winhttp.h>
+#include "embedded_icons.h"
 
 static AddonAPI_t* g_API = nullptr;
 static bool g_ImguiSetupDone = false;
@@ -120,26 +122,16 @@ struct BuiltinMechanic {
 
 // Combined built-in mechanics list (raid encounter effects only)
 static const BuiltinMechanic g_BuiltinMechanics[] = {
-    // Raid encounter effects
+    // Raid encounter effects (effect IDs, not skill IDs)
     {34387, "Volatile Poison", nullptr, "https://wiki.guildwars2.com/images/e/e0/Volatile_Poison.png"},
-    {38210, "Shared Agony", nullptr, "https://wiki.guildwars2.com/images/5/53/Shared_Agony.png"},
-    {47414, "Necrosis", nullptr, "https://wiki.guildwars2.com/images/4/4b/Necrosis.png"},
-    {47164, "Soul Shackle", nullptr, "https://wiki.guildwars2.com/images/3/3c/Soul_Shackle.png"},
-    {34473, "Corruption", "Corruption, get to fountain", "https://wiki.guildwars2.com/images/f/f6/Corruption.png"},
+    {38049, "Shared Agony", nullptr, "https://wiki.guildwars2.com/images/5/53/Shared_Agony.png"},
+    {48042, "Soul Shackle", nullptr, "https://wiki.guildwars2.com/images/8/89/Soul_Shackle_%28effect%29.png"},
+    {34416, "Corruption", "Corruption, get to fountain", "https://wiki.guildwars2.com/images/3/34/Locust_Trail.png"},
     {34450, "Unstable Blood Magic", "SAK, go to wall and drop", "https://wiki.guildwars2.com/images/3/3e/Unstable_Blood_Magic.png"},
-    {48121, "Arcing Affliction", "Bomb, run away", "https://wiki.guildwars2.com/images/5/5a/Arcing_Affliction.png"},
-    {52812, "Tidal Pool", nullptr, "https://wiki.guildwars2.com/images/6/6f/Tidal_Pool.png"},
-    {79513, "Biting Swarm", "Bees. Get away", "https://wiki.guildwars2.com/images/b/b5/Biting_Swarm.png"},
-    // Fixated variants (share same icon)
-    {34508, "Fixated", nullptr, "https://wiki.guildwars2.com/images/a/a2/Fixated.png"},
-    {47434, "Fixated", nullptr, nullptr},
-    {48533, "Fixated", nullptr, nullptr},
-    {39131, "Fixated", nullptr, nullptr},
-    {39928, "Fixated", nullptr, nullptr},
-    {38985, "Fixated", nullptr, nullptr},
-    {39558, "Fixated", nullptr, nullptr},
-    {58136, "Fixated", nullptr, nullptr},
-    {79380, "Fixated", nullptr, nullptr},
+    {47646, "Arcing Affliction", "Bomb, run away", "https://wiki.guildwars2.com/images/5/5a/Arcing_Affliction.png"},
+    {34508, "Fixated", nullptr, "https://wiki.guildwars2.com/images/6/66/Fixated.png"},
+    {47414, "Necrosis", nullptr, "https://wiki.guildwars2.com/images/4/47/Ichor.png"},
+    {79526, "Biting Swarm", "Bees. Get away", "https://wiki.guildwars2.com/images/2/24/Targeted.png"},
 };
 static const size_t g_BuiltinMechanicCount = sizeof(g_BuiltinMechanics) / sizeof(g_BuiltinMechanics[0]);
 
@@ -155,6 +147,19 @@ static const BuiltinMechanic* FindBuiltinMechanic(unsigned int skillID)
             return &g_BuiltinMechanics[i];
     }
     return nullptr;
+}
+
+// Fixated variants all share one toggle keyed on the canonical ID (34508)
+static unsigned int NormalizeMechanicID(unsigned int skillID)
+{
+    switch (skillID)
+    {
+        case 47434: case 48533: case 39131: case 39928:
+        case 38985: case 39558: case 58136: case 79380:
+            return 34508;
+        default:
+            return skillID;
+    }
 }
 
 static bool IsBuiltinMechanicTtsEnabled(unsigned int skillID)
@@ -174,9 +179,11 @@ static std::vector<RaidMechanic> g_RaidMechanics;
 static bool g_MechanicsAnnounceEnabled = false;
 static bool g_ReadAllDebuffs = false;
 static bool g_ShowMechanicsWindow = false;
-static bool g_TestIconEnabled = false;
+static bool g_ShowTestIcon = false;
 static DWORD g_LoadTime = 0;
-static bool g_PreloadDone = false;
+static bool g_PrefetchStarted = false;
+static size_t g_PrefetchIndex = 0;
+static DWORD g_LastPrefetchTime = 0;
 static std::unordered_map<unsigned int, std::string> g_DebuffNameCache;
 
 // Track active buffs with last-seen timestamp so expired debuffs are cleared
@@ -465,6 +472,27 @@ static bool DownloadUrlToFile(const std::string& url, const std::string& filepat
     return success;
 }
 
+static void OnTextureLoaded(const char* aIdentifier, Texture_t* aTexture)
+{
+    if (!aIdentifier) return;
+
+    unsigned int skillID = 0;
+    if (sscanf(aIdentifier, "gw2accessibility_icon_%u", &skillID) == 1 && skillID != 0)
+    {
+        char buf[256];
+        if (aTexture && aTexture->Resource)
+        {
+            g_IconTextures[skillID] = aTexture;
+            snprintf(buf, sizeof(buf), "[ICON] OnTextureLoaded: %s skill=%u W=%u H=%u (cached)", aIdentifier, skillID, aTexture->Width, aTexture->Height);
+        }
+        else
+        {
+            snprintf(buf, sizeof(buf), "[ICON] OnTextureLoaded: %s skill=%u FAILED — aTexture=%p Resource=%p", aIdentifier, skillID, (void*)aTexture, aTexture ? aTexture->Resource : nullptr);
+        }
+        g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
+    }
+}
+
 static ImTextureID LoadIconTexture(unsigned int skillID)
 {
     auto cached = g_IconTextures.find(skillID);
@@ -481,74 +509,77 @@ static ImTextureID LoadIconTexture(unsigned int skillID)
     char identifier[64];
     snprintf(identifier, sizeof(identifier), "gw2accessibility_icon_%u", skillID);
 
-    // Prefer file on disk
-    {
-        Texture_t* tex = g_API->Textures_GetOrCreateFromFile(identifier, filepath.c_str());
-        if (tex && tex->Resource)
-        {
-            g_IconTextures[skillID] = tex;
-            return static_cast<ImTextureID>(tex->Resource);
-        }
-    }
-
-    // Not on disk — get URL (API first, wiki fallback) and download
-    std::string url = FetchSkillIconUrl(skillID);
-    if (url.empty())
-    {
-        const BuiltinMechanic* bm = FindBuiltinMechanic(skillID);
-        if (bm)
-        {
-            if (bm->iconUrl)
-            {
-                url = bm->iconUrl;
-            }
-            else
-            {
-                for (size_t i = 0; i < g_BuiltinMechanicCount; i++)
-                {
-                    if (g_BuiltinMechanics[i].iconUrl && strcmp(g_BuiltinMechanics[i].name, bm->name) == 0)
-                    {
-                        url = g_BuiltinMechanics[i].iconUrl;
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    if (url.empty())
-        return nullptr;
-
-    // Download to disk cache
-    DownloadUrlToFile(url, filepath);
-
-    // Try loading from file again (now that we saved it)
-    {
-        Texture_t* tex = g_API->Textures_GetOrCreateFromFile(identifier, filepath.c_str());
-        if (tex && tex->Resource)
-        {
-            g_IconTextures[skillID] = tex;
-            return static_cast<ImTextureID>(tex->Resource);
-        }
-    }
-
-    // Last resort: load from URL directly
-    size_t schemeEnd = url.find("://");
-    if (schemeEnd == std::string::npos) return nullptr;
-    size_t pathStart = url.find('/', schemeEnd + 3);
-    if (pathStart == std::string::npos) return nullptr;
-
-    std::string base = url.substr(0, pathStart);
-    std::string endpoint = url.substr(pathStart);
-
-    Texture_t* tex = g_API->Textures_GetOrCreateFromURL(identifier, base.c_str(), endpoint.c_str());
+    Texture_t* tex = g_API->Textures_Get(identifier);
     if (tex && tex->Resource)
     {
         g_IconTextures[skillID] = tex;
         return static_cast<ImTextureID>(tex->Resource);
     }
 
-    g_IconTextures[skillID] = tex;
+    static std::unordered_set<unsigned int> s_loadRequested;
+    if (s_loadRequested.find(skillID) != s_loadRequested.end())
+    {
+        char buf[256];
+        snprintf(buf, sizeof(buf), "[ICON] LoadIconTexture: skill=%u already requested — waiting for callback", skillID);
+        g_API->Log(LOGL_DEBUG, "GW2Accessibility", buf);
+        return nullptr;
+    }
+
+    // If file doesn't exist on disk, try deploying from embedded icons first,
+    // then fall back to wiki download.
+    if (!std::filesystem::exists(filepath))
+    {
+        bool deployed = false;
+        {
+            auto embedIt = g_EmbeddedIcons.find(skillID);
+            if (embedIt != g_EmbeddedIcons.end())
+            {
+                std::filesystem::create_directories(std::filesystem::path(filepath).parent_path());
+                std::ofstream file(filepath, std::ios::binary);
+                if (file)
+                {
+                    file.write(reinterpret_cast<const char*>(embedIt->second.data), embedIt->second.size);
+                    deployed = file.good();
+                    char buf[256];
+                    snprintf(buf, sizeof(buf), "[ICON] Deployed embedded icon skill=%u (%u bytes) %s", skillID, static_cast<unsigned>(embedIt->second.size), deployed ? "OK" : "write failed");
+                    g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
+                }
+            }
+        }
+
+        if (!deployed)
+        {
+            std::string url = FetchSkillIconUrl(skillID);
+            if (url.empty())
+            {
+                const BuiltinMechanic* bm = FindBuiltinMechanic(skillID);
+                if (bm && bm->iconUrl)
+                    url = bm->iconUrl;
+                else if (bm)
+                {
+                    for (size_t i = 0; i < g_BuiltinMechanicCount; i++)
+                    {
+                        if (g_BuiltinMechanics[i].iconUrl && strcmp(g_BuiltinMechanics[i].name, bm->name) == 0)
+                        { url = g_BuiltinMechanics[i].iconUrl; break; }
+                    }
+                }
+            }
+            if (url.empty())
+                return nullptr;
+            DownloadUrlToFile(url, filepath);
+        }
+
+        if (!std::filesystem::exists(filepath))
+            return nullptr;
+    }
+
+    s_loadRequested.insert(skillID);
+    {
+        char buf[256];
+        snprintf(buf, sizeof(buf), "[ICON] LoadIconTexture: skill=%u loading async from file \"%s\"", skillID, filepath.c_str());
+        g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
+    }
+    g_API->Textures_LoadFromFile(identifier, filepath.c_str(), OnTextureLoaded);
     return nullptr;
 }
 
@@ -777,6 +808,43 @@ static void LoadSettings()
                 try { g_BuiltinMechanicIcon[static_cast<unsigned int>(std::stoul(it.key()))] = it.value().get<bool>(); } catch (...) {}
             }
         }
+
+        // Migrate old skill IDs to new effect IDs
+        static const std::pair<unsigned int, unsigned int> s_IDMigration[] = {
+            {38210, 38049}, {47164, 48042}, {34473, 34416},
+            {48121, 47646}, {79513, 79526},
+        };
+        for (const auto& pair : s_IDMigration)
+        {
+            unsigned int oldId = pair.first;
+            unsigned int newId = pair.second;
+            auto ttsIt = g_BuiltinMechanicTts.find(oldId);
+            if (ttsIt != g_BuiltinMechanicTts.end())
+            {
+                g_BuiltinMechanicTts[newId] = ttsIt->second;
+                g_BuiltinMechanicTts.erase(ttsIt);
+            }
+            auto iconIt = g_BuiltinMechanicIcon.find(oldId);
+            if (iconIt != g_BuiltinMechanicIcon.end())
+            {
+                g_BuiltinMechanicIcon[newId] = iconIt->second;
+                g_BuiltinMechanicIcon.erase(iconIt);
+            }
+        }
+        // Merge Fixated variant toggles into canonical ID 34508
+        {
+            unsigned int fixatedIds[] = {47434, 48533, 39131, 39928, 38985, 39558, 58136, 79380};
+            bool fixatedTts = false, fixatedIcon = false;
+            for (unsigned int fid : fixatedIds)
+            {
+                auto ttsIt = g_BuiltinMechanicTts.find(fid);
+                if (ttsIt != g_BuiltinMechanicTts.end()) { fixatedTts = fixatedTts || ttsIt->second; g_BuiltinMechanicTts.erase(ttsIt); }
+                auto iconIt = g_BuiltinMechanicIcon.find(fid);
+                if (iconIt != g_BuiltinMechanicIcon.end()) { fixatedIcon = fixatedIcon || iconIt->second; g_BuiltinMechanicIcon.erase(iconIt); }
+            }
+            if (fixatedTts) g_BuiltinMechanicTts[34508] = true;
+            if (fixatedIcon) g_BuiltinMechanicIcon[34508] = true;
+        }
     }
     catch (...)
     {
@@ -989,7 +1057,7 @@ static void OnCombatEvent(void* aEventArgs)
         return;
     }
 
-    unsigned int skillID = cbt->ev->SkillID;
+    unsigned int skillID = NormalizeMechanicID(cbt->ev->SkillID);
     bool isRemove = (cbt->ev->IsBuffRemove != 0);
     DWORD now = GetTickCount();
 
@@ -1557,12 +1625,22 @@ static void OnRender()
 {
     SetupImGui();
 
-    // Pre-fetch all built-in mechanic icons 30s after load
-    if (!g_PreloadDone && g_LoadTime != 0 && GetTickCount() - g_LoadTime >= 30000)
+    // Staggered pre-fetch: start 30s after load, fetch one icon every 5s
+    if (!g_PrefetchStarted && g_LoadTime != 0 && GetTickCount() - g_LoadTime >= 30000)
     {
-        for (size_t i = 0; i < g_BuiltinMechanicCount; i++)
-            LoadIconTexture(g_BuiltinMechanics[i].skillID);
-        g_PreloadDone = true;
+        g_PrefetchStarted = true;
+        g_PrefetchIndex = 0;
+        g_LastPrefetchTime = 0;
+    }
+    if (g_PrefetchStarted && g_PrefetchIndex < g_BuiltinMechanicCount)
+    {
+        DWORD now = GetTickCount();
+        if (g_LastPrefetchTime == 0 || now - g_LastPrefetchTime >= 5000)
+        {
+            LoadIconTexture(g_BuiltinMechanics[g_PrefetchIndex].skillID);
+            g_PrefetchIndex++;
+            g_LastPrefetchTime = now;
+        }
     }
 
     if (g_CrosshairEnabled)
@@ -1576,14 +1654,11 @@ static void OnRender()
         dl->AddLine(ImVec2(mousePos.x, 0.0f), ImVec2(mousePos.x, displaySize.y), color, thickness);
     }
 
-    if (g_TestIconEnabled && g_IconDisplayEnabled)
+    // Test icon toggle: show Necrosis icon so user can configure position/size/opacity
+    if (g_ShowTestIcon)
     {
-        LoadIconTexture(47164);
-        g_ActiveMechanics[47164] = GetTickCount();
-    }
-    else if (!g_TestIconEnabled)
-    {
-        g_ActiveMechanics.erase(47164);
+        LoadIconTexture(47414);
+        g_ActiveMechanics[47414] = GetTickCount();
     }
 
     if (g_IconDisplayEnabled && !g_ActiveMechanics.empty())
@@ -1840,7 +1915,7 @@ static void OnOptionsRender()
     }
 
     // ── Auditory ──────────────────────────────────────────────────────────────
-    if (ImGui::CollapsingHeader("Auditory", ImGuiTreeNodeFlags_DefaultOpen))
+    if (ImGui::CollapsingHeader("Auditory"))
     {
         ImGui::Indent();
 
@@ -1892,10 +1967,6 @@ static void OnOptionsRender()
         changed |= ImGui::Checkbox("Announce Food/Utility Expiry", &g_FoodUtilityExpiryEnabled);
         ImGui::TextDisabled("Speaks \"food expired\" or \"utility expired\" when a buff expires after 1+ minute.");
 
-        changed |= ImGui::Checkbox("Announce Boss Death (Keep Construct)", &g_TofusToggle);
-        if (g_TofusToggle)
-            ImGui::TextDisabled("Speaks \"Tofu, KC is dead, check your gear.\" when Keep Construct dies.");
-
         // ── Raid Mechanics TTS ──
         ImGui::Dummy(ImVec2(0, 4));
         ImGui::TextUnformatted("Raid Mechanic Alerts");
@@ -1927,7 +1998,7 @@ static void OnOptionsRender()
     }
 
     // ── Visual ────────────────────────────────────────────────────────────────
-    if (ImGui::CollapsingHeader("Visual", ImGuiTreeNodeFlags_DefaultOpen))
+    if (ImGui::CollapsingHeader("Visual"))
     {
         ImGui::Indent();
 
@@ -1938,7 +2009,7 @@ static void OnOptionsRender()
         if (g_IconDisplayEnabled)
         {
             ImGui::Indent();
-            changed |= ImGui::SliderFloat("Icon Size", &g_IconSize, 16.0f, 128.0f, "%.0f");
+            changed |= ImGui::SliderFloat("Icon Size", &g_IconSize, 16.0f, 512.0f, "%.0f");
             changed |= ImGui::SliderFloat("Icon Spacing", &g_IconSpacing, 0.0f, 32.0f, "%.0f");
             changed |= ImGui::SliderFloat("Opacity", &g_IconOpacity, 0.0f, 1.0f, "%.2f");
 
@@ -1952,7 +2023,8 @@ static void OnOptionsRender()
             changed |= ImGui::SliderFloat("Icon Offset X %", &g_IconPosition.offsetXPct, -50.0f, 50.0f, "%.1f%%");
             changed |= ImGui::SliderFloat("Icon Offset Y %", &g_IconPosition.offsetYPct, -50.0f, 50.0f, "%.1f%%");
 
-            ImGui::Checkbox("Test Icon (Soul Shackle)", &g_TestIconEnabled);
+            ImGui::Checkbox("Show", &g_ShowTestIcon);
+            ImGui::TextDisabled("Shows a test icon to help set up position, size, and opacity.");
 
             ImGui::Unindent();
         }
@@ -1964,6 +2036,11 @@ static void OnOptionsRender()
     ImGui::Separator();
     ImGui::TextDisabled("Mouse keybind: GW2ACCESSIBILITY_MOUSE_TOGGLE");
     ImGui::TextDisabled("Set in Nexus Settings > Keybinds > GW2Accessibility");
+
+    ImGui::Separator();
+    changed |= ImGui::Checkbox("Tofu's Toggle", &g_TofusToggle);
+    if (g_TofusToggle)
+        ImGui::TextDisabled("Speaks \"Tofu, KC is dead, check your gear.\" when Keep Construct dies.");
 
     if (changed)
         SaveSettings();
@@ -1990,7 +2067,9 @@ void AddonLoad(AddonAPI_t* aAPI)
     g_API->Events_Subscribe(EV_ARCDPS_COMBAT_LOCAL, OnCombatEvent);
 
     g_LoadTime = GetTickCount();
-    g_PreloadDone = false;
+    g_PrefetchStarted = false;
+    g_PrefetchIndex = 0;
+    g_LastPrefetchTime = 0;
 }
 
 void AddonUnload()
@@ -2033,7 +2112,7 @@ void AddonUnload()
 
 extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef()
 {
-    static AddonVersion_t s_Version = { 0, 1, 0, 0 };
+    static AddonVersion_t s_Version = { 0, 1, 1, 0 };
 
     static AddonDefinition_t s_Def = {};
     s_Def.Signature  = -2;
