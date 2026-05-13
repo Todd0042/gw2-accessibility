@@ -1065,7 +1065,11 @@ static void OnCombatEvent(void* aEventArgs)
     // Runs independently of TTS/Announce settings
     if (isRemove)
     {
-        g_ActiveMechanics.erase(skillID);
+        // Only clear on full remove (IsBuffRemove == 1).
+        // Single-stack remove (IsBuffRemove == 2) means a stack was consumed
+        // but the effect is still active (e.g. Biting Swarm).
+        if (cbt->ev->IsBuffRemove == 1)
+            g_ActiveMechanics.erase(skillID);
     }
     else
     {
@@ -1659,6 +1663,10 @@ static void OnRender()
     {
         LoadIconTexture(47414);
         g_ActiveMechanics[47414] = GetTickCount();
+    }
+    else
+    {
+        g_ActiveMechanics.erase(47414);
     }
 
     if (g_IconDisplayEnabled && !g_ActiveMechanics.empty())
