@@ -40,4 +40,5 @@ target_link_libraries(GW2Accessibility PRIVATE
     -Wl,-Bdynamic
     -luuid
     -lsapi
+    -lwinhttp
 )

@@ -1,37 +1,31 @@
-Accessibility Feature Ideas for Guild Wars 2
-============================================
+# Accessibility Feature Suggestions
 
-Visual
-------
-- Cursor enhancement — larger cursor, high-contrast color, crosshair overlay
-- Screen flash on dodge/pain — visual substitute for audio dodge cue
-- CC break alert — screen indicator when stunned/dazed/knocked down
-- Low health/defeat warning — prominent overlay when HP drops below threshold
-- Boon/condition ticker — enhanced display of stability, aegis, fear, stun, etc.
+## Audio/TTS expansions
+- **Skill cooldown alerts** — TTS when dodge/heal/utility come off cooldown
+- **Food/utility expiry warnings** — "Food expired" or "Utility expired" when buffs expire
+- **Squad commander ping TTS** — read commander pings/marker calls
+- **Boss phase announcements** — "Phase 2 starting", "Enrage in 10 seconds"
+- **Priority interrupt system** — high-priority mechanics interrupt lower-priority TTS
+- **Per-channel voice settings** — different voice/pitch for mechanics vs chat vs debuffs
 
-Auditory
---------
--- Chat TTS — read party/squad/whisper chat aloud
-- Danger-ping-to-text — translate audio tells into on-screen text/icons
-- Event trigger announcements — spoken or on-screen notification for world bosses, metas, squad timers
+## Visual overlays
+- **Screen flash/color overlay** for critical incoming mechanics (e.g., red flash for "Corruption")
+- **Large text callout overlay** — big centered text for urgent mechanics instead of just TTS
+- **Countdown timer overlay** — visual countdown for timed mechanics (greens, stacks, etc.)
+- **Color-blind indicators** — pattern/shape overlays instead of relying on color
 
-Motor
------
-- Mouse position memory — configurable positions to quickly move cursor (inventory, minimap, skill bar, etc.)
-- Click assist — hold-to-auto-click for menu navigation
-- Sticky keys / toggle helpers — toggle autorun, dodge, action-camera without holding
-- Quick-mount radial — single-press mount selector
+## Motor/mobility
+- **Auto-interact** — automatically interact with objects when in range (chests, portals, etc.)
+- **Quick-respond keybinds** — one-key responses ("I'm here", "Need healing", "Pulling") broadcast to squad
+- **Simplified targeting** — auto-target nearest enemy / specific target type
+- **Hold-to-cast** — hold a key to channel skills instead of clicking
 
-Cognitive
----------
-- Mechanic reminder overlay — on-screen checklist for raid/fractal mechanics
-- Waypoint navigator — highlight nearest WP or POI on minimap
-- Gathering route helper — visual path to nearby nodes
-- Fishing bite indicator — prominent icon when bobber moves
+## Cognitive
+- **Step-by-step mechanic instructions** — instead of just "Corruption", speak "Corruption — get to fountain"
+- **Encounter phase memory aids** — "Stack at boss", "Spread now", "Breakbar"
+- **Simplified UI mode** — hide non-essential UI elements during combat
 
-GW2-Specific
-------------
-- Profession resource bar — enlarged, repositionable display of lifeforce, adrenaline, initiative, etc.
-- Combat log reader — TTS for important combat events
-- Action camera reticle — customizable crosshair for action-camera mode
-- Mount altitude ladder — numeric altitude display for griffon/skyscale
+## Combat awareness
+- **Incoming damage alerts** — TTS when taking heavy hits or specific damage types
+- **Ally downed/death alerts** — "Player X is downed"
+- **Buff stack counters** — TTS when reaching important boon/condition thresholds
