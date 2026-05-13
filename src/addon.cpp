@@ -77,6 +77,57 @@ static const DWORD g_MechanicIconTimeout = 15000;
 
 static ISpVoice* g_pVoice = nullptr;
 static bool g_TtsReady = false;
+static bool g_IsWine = false;
+static bool g_WineTtsFallback = false;
+static char g_WineTtsPipePath[512] = {0};
+
+static const char* GetWineTtsPipePath()
+{
+    if (g_WineTtsPipePath[0]) return g_WineTtsPipePath;
+
+    char home[256] = {0};
+    DWORD len = GetEnvironmentVariableA("HOME", home, sizeof(home));
+    if (len > 0 && len < sizeof(home))
+        snprintf(g_WineTtsPipePath, sizeof(g_WineTtsPipePath), "Z:\\%s\\.gw2-tts-pipe", home);
+    else
+        snprintf(g_WineTtsPipePath, sizeof(g_WineTtsPipePath), "Z:\\home\\todd\\.gw2-tts-pipe");
+
+    return g_WineTtsPipePath;
+}
+
+static bool DetectWine()
+{
+    HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+    if (ntdll && GetProcAddress(ntdll, "wine_get_version"))
+        return true;
+    return false;
+}
+
+static void SpeakViaWinePipe(const char* utf8)
+{
+    if (!g_WineTtsFallback) return;
+
+    const char* pipePath = GetWineTtsPipePath();
+    HANDLE hPipe = CreateFileA(pipePath, GENERIC_WRITE, 0, nullptr,
+                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hPipe == INVALID_HANDLE_VALUE)
+    {
+        DWORD err = GetLastError();
+        char buf[384];
+        snprintf(buf, sizeof(buf), "[TTS] Pipe open failed: path=%s error=0x%08lX", pipePath, (unsigned long)err);
+        g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
+        g_WineTtsFallback = false;
+        return;
+    }
+
+    std::string line(utf8);
+    for (char& c : line) { if (c == '\r' || c == '\n') c = ' '; }
+    line += "\n";
+
+    DWORD written = 0;
+    WriteFile(hPipe, line.c_str(), static_cast<DWORD>(line.size()), &written, nullptr);
+    CloseHandle(hPipe);
+}
 
 static struct {
     bool enabled = false;
@@ -215,8 +266,40 @@ static std::string g_PlayerName;
 // TTS — messages play sequentially via SAPI's internal async queue
 static void SpeakText(const wchar_t* text)
 {
-    if (!g_pVoice || !text || !*text) return;
-    g_pVoice->Speak(text, SPF_ASYNC | SPF_IS_NOT_XML, nullptr);
+    if (!text || !*text) return;
+
+    if (g_pVoice)
+    {
+        HRESULT hr = g_pVoice->Speak(text, SPF_ASYNC | SPF_IS_NOT_XML, nullptr);
+        if (SUCCEEDED(hr)) return;
+
+        if (g_IsWine)
+        {
+            g_WineTtsFallback = true;
+            char dbg[384];
+            snprintf(dbg, sizeof(dbg), "[TTS] SAPI Speak failed, activating Wine pipe fallback (pipe=%s)", GetWineTtsPipePath());
+            g_API->Log(LOGL_INFO, "GW2Accessibility", dbg);
+            int len = WideCharToMultiByte(CP_UTF8, 0, text, -1, nullptr, 0, nullptr, nullptr);
+            std::string utf8(len > 0 ? static_cast<size_t>(len) - 1 : 0, '\0');
+            if (len > 0) WideCharToMultiByte(CP_UTF8, 0, text, -1, &utf8[0], len, nullptr, nullptr);
+            SpeakViaWinePipe(utf8.c_str());
+            return;
+        }
+
+        char buf[256];
+        int len = WideCharToMultiByte(CP_UTF8, 0, text, -1, nullptr, 0, nullptr, nullptr);
+        std::string utf8(len > 0 ? static_cast<size_t>(len) - 1 : 0, '\0');
+        if (len > 0) WideCharToMultiByte(CP_UTF8, 0, text, -1, &utf8[0], len, nullptr, nullptr);
+        snprintf(buf, sizeof(buf), "[TTS] Speak() failed: 0x%08lX text=\"%s\"", (unsigned long)hr, utf8.c_str());
+        g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
+    }
+    else if (g_IsWine && g_WineTtsFallback)
+    {
+        int len = WideCharToMultiByte(CP_UTF8, 0, text, -1, nullptr, 0, nullptr, nullptr);
+        std::string utf8(len > 0 ? static_cast<size_t>(len) - 1 : 0, '\0');
+        if (len > 0) WideCharToMultiByte(CP_UTF8, 0, text, -1, &utf8[0], len, nullptr, nullptr);
+        SpeakViaWinePipe(utf8.c_str());
+    }
 }
 
 static void InitMumble()
@@ -936,12 +1019,43 @@ static std::wstring Utf8ToWide(const char* utf8)
 static void InitSAPI()
 {
     if (g_TtsReady) return;
+
+    g_IsWine = DetectWine();
+
     HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    char buf[256];
     if (FAILED(hr))
+    {
+        snprintf(buf, sizeof(buf), "[TTS] CoInitializeEx(MT) failed: 0x%08lX, retrying STA", (unsigned long)hr);
+        g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
         hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-    hr = CoCreateInstance(CLSID_SpVoice, nullptr, CLSCTX_ALL,
-                          IID_ISpVoice, (void**)&g_pVoice);
-    g_TtsReady = SUCCEEDED(hr) && g_pVoice != nullptr;
+    }
+
+    if (FAILED(hr))
+    {
+        snprintf(buf, sizeof(buf), "[TTS] CoInitializeEx(STA) failed: 0x%08lX", (unsigned long)hr);
+        g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
+    }
+
+    if (SUCCEEDED(hr))
+    {
+        hr = CoCreateInstance(CLSID_SpVoice, nullptr, CLSCTX_ALL,
+                              IID_ISpVoice, (void**)&g_pVoice);
+        g_TtsReady = SUCCEEDED(hr) && g_pVoice != nullptr;
+    }
+
+    if (g_TtsReady)
+        g_API->Log(LOGL_INFO, "GW2Accessibility", "[TTS] SAPI voice initialized successfully");
+    else if (g_IsWine)
+    {
+        g_API->Log(LOGL_INFO, "GW2Accessibility", "[TTS] SAPI unavailable (Wine detected), enabling espeak-ng pipe fallback");
+        g_WineTtsFallback = true;
+    }
+    else
+    {
+        snprintf(buf, sizeof(buf), "[TTS] CoCreateInstance(CLSID_SpVoice) failed: 0x%08lX", (unsigned long)hr);
+        g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
+    }
 }
 
 static void OnCombatEvent(void* aEventArgs)
@@ -971,10 +1085,7 @@ static void OnCombatEvent(void* aEventArgs)
         {
             g_BossDeathAnnounced = true;
             InitSAPI();
-            if (g_TtsReady)
-            {
-                g_pVoice->Speak(L"Tofu, KC is dead, check your gear.", SPF_ASYNC | SPF_PURGEBEFORESPEAK | SPF_IS_NOT_XML, nullptr);
-            }
+            SpeakText(L"Tofu, KC is dead, check your gear.");
             g_API->Log(LOGL_INFO, "GW2Accessibility", "[BOSS] KC death via REWARD");
             return;
         }
@@ -1386,10 +1497,7 @@ static void OnChatMessage(void* aEventArgs)
                 {
                     g_BossDeathAnnounced = true;
                     InitSAPI();
-                    if (g_TtsReady)
-                    {
-                        g_pVoice->Speak(L"Tofu, KC is dead, check your gear.", SPF_ASYNC | SPF_PURGEBEFORESPEAK | SPF_IS_NOT_XML, nullptr);
-                    }
+                    SpeakText(L"Tofu, KC is dead, check your gear.");
                     g_API->Log(LOGL_INFO, "GW2Accessibility", "[BOSS] Boss death via chat 'defeated' message");
                 }
                 return;
@@ -2120,7 +2228,7 @@ void AddonUnload()
 
 extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef()
 {
-    static AddonVersion_t s_Version = { 0, 1, 1, 0 };
+    static AddonVersion_t s_Version = { 0, 1, 2, 0 };
 
     static AddonDefinition_t s_Def = {};
     s_Def.Signature  = -2;
