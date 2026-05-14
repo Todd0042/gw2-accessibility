@@ -247,8 +247,12 @@ static bool g_FoodUtilityExpiryEnabled = false;
 static std::unordered_map<unsigned int, DWORD> g_TrackedFoodUtility;
 static const DWORD g_FoodUtilityMinDuration = 60000; // must be active >1 min to be food/utility
 
+// Squad state tracking
+static bool g_InSquad = false;
+
 // Ally downed tracking
 static bool g_AllyDownedEnabled = false;
+static bool g_AllyDownedSquadOnly = false;
 static bool g_TofusToggle = false;
 static std::unordered_set<uint64_t> g_DownedAgents;
 static bool g_BossDeathAnnounced = false;
@@ -737,6 +741,7 @@ static void SaveSettings()
     j["iconOffsetY"] = g_IconPosition.offsetYPct;
     j["foodUtilityExpiry"] = g_FoodUtilityExpiryEnabled;
     j["allyDownedEnabled"] = g_AllyDownedEnabled;
+    j["allyDownedSquadOnly"] = g_AllyDownedSquadOnly;
     j["tofusToggle"] = g_TofusToggle;
 
     nlohmann::json tts;
@@ -822,6 +827,7 @@ static void LoadSettings()
         g_IconPosition.offsetYPct = j.value("iconOffsetY", -10.0f);
         g_FoodUtilityExpiryEnabled = j.value("foodUtilityExpiry", false);
         g_AllyDownedEnabled = j.value("allyDownedEnabled", false);
+        g_AllyDownedSquadOnly = j.value("allyDownedSquadOnly", false);
         g_TofusToggle = j.value("tofusToggle", false);
 
         auto& positions = j["positions"];
@@ -1091,6 +1097,17 @@ static void OnCombatEvent(void* aEventArgs)
         }
     }
 
+    // ── Squad tracking via team ID change ─────────────────────────────────
+    if (cbt->ev->IsStatechange == 22) // CBTS_TEAMCHANGE
+    {
+        if (cbt->src && cbt->src->IsSelf)
+        {
+            uint16_t newTeam = static_cast<uint16_t>(cbt->ev->DestinationAgent);
+            g_InSquad = (newTeam > 0);
+        }
+        return;
+    }
+
     if (!cbt->dst) return;
 
     // ── Track Keep Construct from buff application events ─────────────────
@@ -1114,8 +1131,10 @@ static void OnCombatEvent(void* aEventArgs)
     if (!cbt->dst) return;
 
     // ── Ally downed tracking (state change event) ────────────────────────────
-    if (g_AllyDownedEnabled && cbt->ev->IsStatechange == 5) // CBTS_CHANGEDOWN
+    if (cbt->ev->IsStatechange == 5) // CBTS_CHANGEDOWN
     {
+        if (!g_AllyDownedEnabled) return;
+        if (g_AllyDownedSquadOnly && !g_InSquad) return;
         uint64_t agentId = cbt->ev->SourceAgent;
         if (!g_DownedAgents.count(agentId))
         {
@@ -2078,6 +2097,13 @@ static void OnOptionsRender()
         ImGui::Separator();
 
         changed |= ImGui::Checkbox("Announce Ally Downed", &g_AllyDownedEnabled);
+        if (g_AllyDownedEnabled)
+        {
+            ImGui::Indent();
+            changed |= ImGui::Checkbox("Squad Only", &g_AllyDownedSquadOnly);
+            ImGui::TextDisabled("Only announce when in a squad (filters party-only groups).");
+            ImGui::Unindent();
+        }
         ImGui::TextDisabled("Speaks \"PlayerName downed\" when a squad member goes downed.");
 
         changed |= ImGui::Checkbox("Announce Food/Utility Expiry", &g_FoodUtilityExpiryEnabled);
