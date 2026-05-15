@@ -1,4 +1,4 @@
-build/
+build/CMakeFiles/
 *.dll
 *.dll.a
 .vs/
