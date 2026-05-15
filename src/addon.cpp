@@ -3247,8 +3247,12 @@ static void OnKeybindOverlayRender()
     float baseY = (row == 0) ? 0.0f : (row == 1) ? displaySize.y * 0.5f : displaySize.y;
     float offsetX = (g_KeybindPosition.offsetXPct / 100.0f) * displaySize.x;
     float offsetY = (g_KeybindPosition.offsetYPct / 100.0f) * displaySize.y;
+    // Pivot matches the anchor so the window's corresponding corner sits exactly at the anchor point.
+    // e.g. TopRight → pivot (1,0) means the window's top-right corner lands at the right edge of the screen.
+    float pivotX = col * 0.5f;
+    float pivotY = row * 0.5f;
 
-    ImGui::SetNextWindowPos(ImVec2(baseX + offsetX, baseY + offsetY));
+    ImGui::SetNextWindowPos(ImVec2(baseX + offsetX, baseY + offsetY), ImGuiCond_Always, ImVec2(pivotX, pivotY));
     ImGui::SetNextWindowBgAlpha(g_KeybindOverlayOpacity);
     ImGui::PushStyleVar(ImGuiStyleVar_Alpha, g_KeybindOverlayOpacity);
 
