@@ -1,14 +1,18 @@
 #include "addon.h"
 #include "Chat.h"
 #include "arcdpsheader.h"
+#include "unofficial_extras.h"
 #include "mumbleheader.h"
 #include "boon_ignore.h"
 #include "buff_names.h"
 #include "tts_messages.h"
 #include <imgui.h>
 #include <windows.h>
+#include <shellapi.h>
+#include <commdlg.h>
 #include <sapi.h>
 #include <nlohmann/json.hpp>
+#include "reffect_pack.h"
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -72,6 +76,50 @@ static std::unordered_map<unsigned int, Texture_t*> g_IconTextures;
 static std::unordered_map<unsigned int, std::string> g_IconUrlCache;
 static std::unordered_map<unsigned int, DWORD> g_ActiveMechanics;
 static const DWORD g_MechanicIconTimeout = 15000;
+
+// ── Effect Tracking Manager ──────────────────────────────────────────
+static bool g_ShowEffectManager = false;
+static std::unordered_map<unsigned int, std::string> g_EncounteredEffects;
+static std::unordered_set<unsigned int> g_TrackedConditionsExtra;
+static std::unordered_set<unsigned int> g_TrackedBuffsExtra;
+
+// ── Keybind Overlay ─────────────────────────────────────────────────────────
+enum KeybindVisibility { KV_Always = 0, KV_InCombatOnly, KV_OutOfCombatOnly };
+static bool g_KeybindOverlayEnabled = false;
+static int g_KeybindVisibility = KV_Always;
+static bool g_KeybindShowMovement   = true;
+static bool g_KeybindShowSkills     = true;
+static bool g_KeybindShowTargeting  = false;
+static bool g_KeybindShowMounts     = true;
+static bool g_KeybindShowSquad      = false;
+static bool g_KeybindShowCamera     = false;
+static bool g_KeybindShowScreenshot = false;
+static bool g_KeybindShowMap        = false;
+static bool g_KeybindShowUI         = false;
+static bool g_KeybindShowTemplates  = false;
+static ConfigPosition g_KeybindPosition = {AnchorPoint::MiddleLeft, 2.0f, 0.0f};
+static float g_KeybindOverlayOpacity = 0.4f;
+static bool g_ShowKeybindConfig = false;
+static bool g_InCombat = false;
+static bool g_KeybindsFromRealDocs = false;
+static char g_KeybindCustomPath[512] = {0};
+
+struct KeybindEntry {
+    std::string  category;
+    std::string  name;
+    std::string  key;        // primary binding display string (may include modifier prefix)
+    std::string  key2;       // secondary binding display string (empty if none)
+    unsigned int rawButton  = 0;
+    unsigned int rawButton2 = 0;
+    unsigned int rawMod     = 0;
+    unsigned int rawMod2    = 0;
+};
+static std::vector<KeybindEntry> g_Keybinds; // populated from XML
+static bool g_KeybindsLoaded = false;
+static std::vector<std::string> g_KeybindFiles; // available XML files
+static int g_KeybindFileIndex = -1; // selected file index
+static std::string g_ManualKeybindPath; // full path for manually selected file
+static std::string g_KeybindBaseDir;   // resolved base directory from last successful scan
 
 // ── TTS ──────────────────────────────────────────────────────────────────────
 
@@ -249,6 +297,10 @@ static const DWORD g_FoodUtilityMinDuration = 60000; // must be active >1 min to
 
 // Squad state tracking
 static bool g_InSquad = false;
+
+// Ready check detection (Unofficial Extras)
+static bool g_ReadyCheckTtsEnabled = false;
+static std::unordered_map<std::string, bool> g_SquadReadyStatus;
 
 // Ally downed tracking
 static bool g_AllyDownedEnabled = false;
@@ -490,6 +542,50 @@ static std::string FetchSkillIconUrl(unsigned int skillID)
     return iconUrl;
 }
 
+// Hardcoded render CDN URLs for common conditions and boons.
+// These are extracted from skill facts and the wiki; the GW2 API
+// does NOT expose a /v2/effects endpoint.
+static const char* GetEffectIconUrl(unsigned int effectID)
+{
+    switch (effectID)
+    {
+        // ── Conditions ──
+        case 736: return "https://render.guildwars2.com/file/79FF0046A5F9ADA3B4C4EC19ADB4CB124D5F0021/102848.png"; // Bleeding
+        case 737: return "https://render.guildwars2.com/file/B47BF5803FED2718D7474EAF9617629AD068EE10/102849.png"; // Burning
+        case 738: return "https://render.guildwars2.com/file/3A394C1A0A3257EB27A44842DDEEF0DF000E1241/102850.png"; // Vulnerability
+        case 720: return "https://render.guildwars2.com/file/09770136BB76FD0DBE1CC4267DEED54774CB20F6/102837.png"; // Blinded
+        case 721: return "https://render.guildwars2.com/file/070325E519C178D502A8160523766070D30C0C19/102838.png"; // Crippled
+        case 722: return "https://render.guildwars2.com/file/28C4EC547A3516AF0242E826772DA43A5EAC3DF3/102839.png"; // Chilled
+        case 723: return "https://render.guildwars2.com/file/559B0AF9FB5E1243D2649FAAE660CCB338AACC19/102840.png"; // Poisoned
+        case 727: return "https://render.guildwars2.com/file/397A613651BFCA2832B6469CE34735580A2C120E/102844.png"; // Immobilized
+        case 742: return "https://render.guildwars2.com/file/1781E2522B28272DA1C8B2DB1F4D0C32AD3CF781/102851.png"; // Weakness
+        case 791: return "https://render.guildwars2.com/file/103314B67C76E34E257335B48F2FC68988CEFC69/102853.png"; // Fear
+        case 861: return "https://render.guildwars2.com/file/546242E58F6E4E1DEB5B8205B0B24983E5A8F1DC/102847.png"; // Confusion
+        case 19426: return "https://render.guildwars2.com/file/99B0E3B9C5A06E252A28680E98A36F6D82CD2FB6/102846.png"; // Torment
+        case 26766: return "https://render.guildwars2.com/file/7CC00A3E50106EB0A0A57F0A56D32529A64C42B0/102845.png"; // Slow
+        case 27705: return "https://render.guildwars2.com/file/6B1946FE00975D1E68A0D1A42C7A9B0B546CA896/102841.png"; // Taunt
+        // ── Boons ──
+        case 717: return "https://render.guildwars2.com/file/CD77D1FAB7B270223538A8F8ECDA1CFB044D65F4/102834.png"; // Protection
+        case 718: return "https://render.guildwars2.com/file/F69996772B9E18FD18AD0AABAB25D7E3FC42F261/102835.png"; // Regeneration
+        case 719: return "https://render.guildwars2.com/file/20CFC14967E67F7A3FD4A4B8722B4CF5B8565E11/102836.png"; // Swiftness
+        case 725: return "https://render.guildwars2.com/file/96D90DF84CAFE008233DD1C2606A12C1A0E68048/102842.png"; // Fury
+        case 726: return "https://render.guildwars2.com/file/58E92EBAF0DB4DA7C4AC04D9B22BCA5ECF0100DE/102843.png"; // Vigor
+        case 740: return "https://render.guildwars2.com/file/2FA9DF9D6BC17839BBEA14723F1C53D645DDB5E1/102852.png"; // Might
+        case 743: return "https://render.guildwars2.com/file/DFB4D1B50AE4D6A275B349E15B179261EE3EB0AF/102854.png"; // Aegis
+        case 1122: return "https://render.guildwars2.com/file/04A84DAB1ADB575773DDA3E352A5B6A80D56FC7D/102855.png"; // Stability
+        case 1187: return "https://render.guildwars2.com/file/3E3A1A8FDEBB3379D49270DC0F5725A63056FC56/102832.png"; // Quickness
+        case 26980: return "https://render.guildwars2.com/file/50BAC1B8E10CFAB9E749A5D910D4A9DCF29EBB7C/961398.png"; // Resistance
+        case 27794: return "https://render.guildwars2.com/file/D104A6B9344A2E2096424A3C300E46BC2926E4D7/2440718.png"; // Resolution
+        case 30328: return "https://render.guildwars2.com/file/DCD34C28FF23D54D0EED9B5A47D6A06E3B9DC527/102833.png"; // Alacrity
+        default: return nullptr;
+    }
+}
+
+static void AddIcon(nlohmann::json& members, unsigned int id, const char* name, float x, float y, float size);
+static void AddBackgroundBar(nlohmann::json& members, unsigned int bgId, float x, float y, float width, float height, bool intensity);
+static nlohmann::json MakeBaseFilter();
+static nlohmann::json MakeEmptyFilter();
+
 static std::string GetIconsDir()
 {
     const char* dir = g_API->Paths_GetAddonDirectory("GW2Accessibility");
@@ -500,6 +596,216 @@ static std::string GetIconsDir()
         path += '\\';
     path += "icons\\";
     return path;
+}
+
+static std::string GetReffectPacksDir()
+{
+    const char* reffectDir = g_API->Paths_GetAddonDirectory("reffect");
+    if (reffectDir && reffectDir[0])
+    {
+        std::string path = reffectDir;
+        if (path.back() != '\\' && path.back() != '/')
+            path += '\\';
+        path += "packs\\";
+        return path;
+    }
+
+    HMODULE hMod = GetModuleHandleA("GW2Accessibility.dll");
+    if (!hMod) return "";
+
+    char ourPath[MAX_PATH];
+    DWORD len = GetModuleFileNameA(hMod, ourPath, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) return "";
+
+    std::string path(ourPath);
+    size_t pos = path.find("\\addons\\GW2Accessibility\\");
+    if (pos == std::string::npos) return "";
+
+    return path.substr(0, pos) + "\\addons\\reffect\\packs\\";
+}
+
+static void DeployReffectPack()
+{
+    std::string dir = GetReffectPacksDir();
+    if (dir.empty()) return;
+
+    std::filesystem::create_directories(dir);
+    std::string filepath = dir + "GW2Accessibility.json";
+
+    if (std::filesystem::exists(filepath)) return;
+
+    std::ofstream file(filepath, std::ios::binary);
+    if (file.is_open())
+    {
+        file << g_ReffectPackJson;
+        char buf[256];
+        snprintf(buf, sizeof(buf), "[REFFECT] Deployed pack to %s", filepath.c_str());
+        g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
+    }
+}
+
+static void AddIcon(nlohmann::json& members, unsigned int id, const char* name, float x, float y, float size)
+{
+    nlohmann::json icon;
+    icon["enabled"] = true;
+    icon["name"] = name;
+    icon["anchor"] = "Screen";
+    icon["pos"] = {x, y};
+    icon["opacity"] = 1.0;
+
+    nlohmann::json trigger;
+    trigger["source"]["type"] = "Buff";
+    trigger["source"]["combatant"] = "Player";
+    trigger["source"]["ids"] = nlohmann::json::array({id});
+    trigger["threshold"]["threshold_type"] = "Present";
+    trigger["threshold"]["amount_type"] = "Intensity";
+    icon["trigger"] = trigger;
+
+    nlohmann::json filter;
+    filter["player"]["combat"] = nullptr;
+    filter["player"]["weapons"] = nlohmann::json::array();
+    filter["player"]["weapon_mode"] = "Any";
+    filter["player"]["sigils"] = nlohmann::json::array();
+    filter["player"]["sigil_mode"] = "Any";
+    filter["player"]["relics"] = nlohmann::json::array();
+    filter["player"]["traits"] = nlohmann::json::array();
+    filter["player"]["trait_mode"] = "All";
+    filter["player"]["specs"] = nlohmann::json::array();
+    filter["player"]["skill_selections"] = nlohmann::json::array();
+    filter["player"]["skill_selections_mode"] = "All";
+    filter["player"]["prof_selections"] = nlohmann::json::array();
+    filter["player"]["mounts"] = nlohmann::json::array();
+    filter["map"]["category"] = nlohmann::json::array();
+    filter["map"]["whitelist"] = true;
+    filter["map"]["ids"] = nlohmann::json::array();
+    icon["filter"] = filter;
+
+    icon["animation"] = nullptr;
+    icon["type"] = "Icon";
+    icon["icon"] = "Automatic";
+    icon["tint"] = {1.0, 1.0, 1.0, 1.0};
+    icon["zoom"] = 1.0;
+    icon["round"] = 0.0;
+    icon["border_size"] = 0.0;
+    icon["border_color"] = {0.0, 0.0, 0.0, 1.0};
+    icon["conditions"] = nlohmann::json::array();
+    icon["duration_bar"] = true;
+    icon["duration_text"] = true;
+    icon["stacks_text"] = false;
+    icon["size"] = {size, size};
+
+    members.push_back(icon);
+}
+
+static void AddBackgroundBar(nlohmann::json& members, unsigned int bgId, float x, float y, float width, float height, bool intensity)
+{
+    nlohmann::json bar;
+    bar["enabled"] = true;
+    bar["name"] = "Background";
+    bar["anchor"] = "Screen";
+    bar["pos"] = {x, y};
+    bar["opacity"] = 1.0;
+
+    nlohmann::json trigger;
+    if (bgId != 0)
+    {
+        trigger["source"]["type"] = "Buff";
+        trigger["source"]["combatant"] = "Player";
+        trigger["source"]["ids"] = nlohmann::json::array({bgId});
+        trigger["threshold"]["threshold_type"] = "Present";
+        trigger["threshold"]["amount_type"] = "Intensity";
+    }
+    else
+    {
+        trigger["source"]["type"] = "Inherit";
+        trigger["threshold"]["threshold_type"] = "Always";
+        trigger["threshold"]["amount_type"] = "Intensity";
+    }
+    bar["trigger"] = trigger;
+
+    nlohmann::json filter;
+    filter["player"]["combat"] = nullptr;
+    filter["player"]["weapons"] = nlohmann::json::array();
+    filter["player"]["weapon_mode"] = "Any";
+    filter["player"]["sigils"] = nlohmann::json::array();
+    filter["player"]["sigil_mode"] = "Any";
+    filter["player"]["relics"] = nlohmann::json::array();
+    filter["player"]["traits"] = nlohmann::json::array();
+    filter["player"]["trait_mode"] = "All";
+    filter["player"]["specs"] = nlohmann::json::array();
+    filter["player"]["skill_selections"] = nlohmann::json::array();
+    filter["player"]["skill_selections_mode"] = "All";
+    filter["player"]["prof_selections"] = nlohmann::json::array();
+    filter["player"]["mounts"] = nlohmann::json::array();
+    filter["map"]["category"] = nlohmann::json::array();
+    filter["map"]["whitelist"] = true;
+    filter["map"]["ids"] = nlohmann::json::array();
+    bar["filter"] = filter;
+
+    bar["animation"] = nullptr;
+    bar["type"] = "Bar";
+    bar["progress_kind"] = intensity ? "Intensity" : "Duration";
+    bar["max"] = 25.0;
+    bar["lower_bound"] = 0.0;
+    bar["upper_bound"] = intensity ? 0.01 : 1.0;
+    bar["fill"] = {9.9999e-7, 0.000001, 9.9999e-7, 0.9378531f};
+    bar["background"] = {0.0, 0.0, 0.0, 0.0};
+    bar["border_size"] = 1.0;
+    bar["border_color"] = {0.0, 0.0, 0.0, 1.0};
+    bar["tick_size"] = 1.0;
+    bar["tick_color"] = {0.0, 0.0, 0.0, 1.0};
+    bar["conditions"] = nlohmann::json::array();
+    bar["size"] = {width, height};
+    bar["align"] = "Center";
+    bar["direction"] = "Right";
+    bar["tick_unit"] = "Percent";
+    bar["ticks"] = nlohmann::json::array();
+
+    members.push_back(bar);
+}
+
+static nlohmann::json MakeBaseFilter()
+{
+    nlohmann::json filter;
+    filter["player"]["combat"] = nullptr;
+    filter["player"]["weapons"] = nlohmann::json::array();
+    filter["player"]["weapon_mode"] = "Any";
+    filter["player"]["sigils"] = nlohmann::json::array();
+    filter["player"]["sigil_mode"] = "Any";
+    filter["player"]["relics"] = nlohmann::json::array();
+    filter["player"]["traits"] = nlohmann::json::array();
+    filter["player"]["trait_mode"] = "All";
+    filter["player"]["specs"] = nlohmann::json::array();
+    filter["player"]["skill_selections"] = nlohmann::json::array();
+    filter["player"]["skill_selections_mode"] = "All";
+    filter["player"]["prof_selections"] = nlohmann::json::array();
+    filter["player"]["mounts"] = nlohmann::json::array();
+    filter["map"]["category"] = nlohmann::json::array({"PvE", "Instance", "Other"});
+    filter["map"]["whitelist"] = true;
+    filter["map"]["ids"] = nlohmann::json::array();
+    return filter;
+}
+
+static nlohmann::json MakeEmptyFilter()
+{
+    nlohmann::json filter;
+    filter["player"]["combat"] = nullptr;
+    filter["player"]["weapons"] = nlohmann::json::array();
+    filter["player"]["weapon_mode"] = "Any";
+    filter["player"]["sigils"] = nlohmann::json::array();
+    filter["player"]["sigil_mode"] = "Any";
+    filter["player"]["relics"] = nlohmann::json::array();
+    filter["player"]["traits"] = nlohmann::json::array();
+    filter["player"]["trait_mode"] = "All";
+    filter["player"]["specs"] = nlohmann::json::array();
+    filter["player"]["skill_selections"] = nlohmann::json::array();
+    filter["player"]["skill_selections_mode"] = "All";
+    filter["player"]["prof_selections"] = nlohmann::json::array();
+    filter["player"]["mounts"] = nlohmann::json::array();
+    filter["map"]["category"] = nlohmann::json::array();
+    filter["map"]["whitelist"] = true;
+    filter["map"]["ids"] = nlohmann::json::array();
+    return filter;
 }
 
 static bool DownloadUrlToFile(const std::string& url, const std::string& filepath)
@@ -699,6 +1005,713 @@ static void PruneExpiredMechanics(DWORD now)
 static const char* EV_ARCDPS_COMBAT_SQUAD = "EV_ARCDPS_COMBATEVENT_SQUAD_RAW";
 static const char* EV_ARCDPS_COMBAT_LOCAL = "EV_ARCDPS_COMBATEVENT_LOCAL_RAW";
 
+// ── Keybind XML Parser ───────────────────────────────────────────────────────
+
+// Resolves a Wine drive letter (e.g. 'c', 's', 'x') to a Unix path
+// using the dosdevices symlinks in the prefix
+// Resolves a Wine drive letter using the dosdevices symlink in the prefix.
+// On MinGW we parse the symlink target file directly since readlink is unavailable.
+static std::string ResolveWineDrive(char drive, const std::string& remaining, const std::string& prefix)
+{
+    char dosDevice[512];
+    snprintf(dosDevice, sizeof(dosDevice), "%s/dosdevices/%c:", prefix.c_str(), drive);
+
+    // Read symlink target by opening as text file (MinGW provides this via cygwin compat)
+    std::ifstream linkFile(dosDevice);
+    if (!linkFile.is_open()) return "";
+
+    char linkTarget[512] = {0};
+    linkFile.getline(linkTarget, sizeof(linkTarget));
+    linkFile.close();
+
+    // Trim any trailing whitespace / carriage return
+    size_t len = strlen(linkTarget);
+    while (len > 0 && (linkTarget[len-1] == '\r' || linkTarget[len-1] == '\n' || linkTarget[len-1] == ' '))
+    {
+        linkTarget[--len] = '\0';
+    }
+    if (len == 0) return "";
+
+    std::string target(linkTarget);
+    std::string rem = remaining;
+    while (!rem.empty() && rem[0] == '/') rem.erase(rem.begin());
+
+    if (!target.empty() && target[0] == '/')
+    {
+        // Absolute path
+        return target + "/" + rem;
+    }
+    else
+    {
+        // Relative path — resolve from prefix/dosdevices
+        std::string base = prefix + "/dosdevices";
+        std::string resolved = base + "/" + target;
+        std::string result;
+        std::vector<std::string> parts;
+        size_t start = 0;
+        while (start < resolved.size())
+        {
+            size_t next = resolved.find('/', start);
+            std::string comp = (next == std::string::npos) ? resolved.substr(start) : resolved.substr(start, next - start);
+            if (comp == "..")
+            {
+                if (!parts.empty()) parts.pop_back();
+            }
+            else if (!comp.empty() && comp != ".")
+            {
+                parts.push_back(comp);
+            }
+            if (next == std::string::npos) break;
+            start = next + 1;
+        }
+        for (auto& part : parts) result += "/" + part;
+        if (result.empty()) result = "/";
+        return result + "/" + rem;
+    }
+}
+
+// Converts a Wine-style path (e.g. "C:\Users\...\Documents") to a Unix path
+// Z: on this system maps to /home/<user> (desktop integration)
+static std::string WinePathToUnix(const char* winePath)
+{
+    if (!winePath) return "";
+
+    std::string p = winePath;
+
+    // Normalize slashes first
+    for (size_t i = 0; i < p.size(); i++)
+        if (p[i] == '\\') p[i] = '/';
+
+    // Check for drive letter (e.g. C: or Z:)
+    if (p.size() >= 2 && p[1] == ':')
+    {
+        char drive = std::tolower(p[0]);
+        char home[256] = {0};
+        GetEnvironmentVariableA("HOME", home, sizeof(home));
+        char buf[512];
+
+        if (drive == 'z')
+        {
+            // Z: maps to / on this Wine setup
+            snprintf(buf, sizeof(buf), "%s", home);
+            p = std::string(buf) + p.substr(2);
+        }
+        else if (drive == 'c')
+        {
+            // C: — check for Users/<user> pattern and use WINEPREFIX/drive_c mapping
+            char winePrefix[512] = {0};
+            GetEnvironmentVariableA("WINEPREFIX", winePrefix, sizeof(winePrefix));
+            std::string remaining = p.substr(2);
+
+            // Derive prefix from our own DLL path (pfx is in the path)
+            char ourDll[MAX_PATH] = {0};
+            HMODULE hMod = GetModuleHandleA("GW2Accessibility.dll");
+            if (hMod) GetModuleFileNameA(hMod, ourDll, MAX_PATH);
+            std::string ourPathStr(ourDll);
+            std::string detectedPfx;
+            size_t pfxPos = ourPathStr.find("/pfx/");
+            if (pfxPos != std::string::npos)
+                detectedPfx = ourPathStr.substr(0, pfxPos + 4);
+
+            // Strip leading '/' from remaining to avoid double-slash on concatenation
+            std::string remStripped = remaining;
+            while (!remStripped.empty() && remStripped[0] == '/') remStripped.erase(remStripped.begin());
+
+            // /Users/<user> or \Users\<user> after drive letter
+            bool isUsersPath = false;
+            std::string check = remaining;
+            if (check.size() >= 7 && std::tolower(check[0]) == 'u')
+            {
+                std::string lower = check;
+                for (size_t i = 0; i < lower.size(); i++) lower[i] = std::tolower(lower[i]);
+                if (lower.compare(0, 7, "users/") == 0 || lower.compare(0, 8, "\\users\\") == 0)
+                    isUsersPath = true;
+            }
+
+            if (isUsersPath)
+            {
+                if (winePrefix[0])
+                    snprintf(buf, sizeof(buf), "%s/drive_c", winePrefix);
+                else if (!detectedPfx.empty())
+                    snprintf(buf, sizeof(buf), "%s/drive_c", detectedPfx.c_str());
+                else
+                {
+                    const char* candidates[] = {
+                        "/home/todd/Documents/Games/guild-wars-2/pfx",
+                        "/home/todd/Documents/Games/guild-wars-2",
+                        "/home/todd/.wine"
+                    };
+                    for (auto& c : candidates)
+                    {
+                        if (std::filesystem::exists(std::string(c) + "/drive_c"))
+                        {
+                            snprintf(buf, sizeof(buf), "%s/drive_c", c);
+                            break;
+                        }
+                    }
+                }
+                p = std::string(buf) + "/" + remStripped;
+            }
+            else
+            {
+                // Other C: paths — first try dosdevices/c: symlink
+                if (!detectedPfx.empty())
+                {
+                    std::string resolved = ResolveWineDrive('c', remaining, detectedPfx);
+                    if (!resolved.empty() && std::filesystem::exists(resolved.substr(0, resolved.find("/", 10))))
+                    {
+                        p = resolved;
+                    }
+                    else
+                    {
+                        // Fallback to prefix/drive_c
+                        if (winePrefix[0])
+                            snprintf(buf, sizeof(buf), "%s/drive_c", winePrefix);
+                        else if (!detectedPfx.empty())
+                            snprintf(buf, sizeof(buf), "%s/drive_c", detectedPfx.c_str());
+                        else
+                        {
+                            const char* candidates[] = {
+                                "/home/todd/Documents/Games/guild-wars-2/pfx",
+                                "/home/todd/Documents/Games/guild-wars-2",
+                                "/home/todd/.wine"
+                            };
+                            for (auto& c : candidates)
+                            {
+                                if (std::filesystem::exists(std::string(c) + "/drive_c"))
+                                {
+                                    snprintf(buf, sizeof(buf), "%s/drive_c", c);
+                                    break;
+                                }
+                            }
+                        }
+                        p = std::string(buf) + "/" + remStripped;
+                    }
+                }
+                else
+                {
+                    if (winePrefix[0])
+                        snprintf(buf, sizeof(buf), "%s/drive_c", winePrefix);
+                    else
+                        snprintf(buf, sizeof(buf), "%s/.wine/drive_c", home);
+                    p = std::string(buf) + "/" + remStripped;
+                }
+            }
+        }
+        else
+        {
+            // Other drives (S:, X:, etc.) — try dosdevices symlinks first
+            char ourDll[MAX_PATH] = {0};
+            HMODULE hMod = GetModuleHandleA("GW2Accessibility.dll");
+            if (hMod) GetModuleFileNameA(hMod, ourDll, MAX_PATH);
+            std::string ourPathStr(ourDll);
+            std::string detectedPfx;
+            size_t pfxPos = ourPathStr.find("/pfx/");
+            if (pfxPos != std::string::npos)
+                detectedPfx = ourPathStr.substr(0, pfxPos + 4);
+
+            if (!detectedPfx.empty())
+            {
+                std::string remaining = p.substr(2);
+                std::string resolved = ResolveWineDrive(drive, remaining, detectedPfx);
+                if (!resolved.empty())
+                {
+                    p = resolved;
+                }
+                else
+                {
+                    // Fallback: WINEPREFIX env var or home/.wine
+                    char winePrefix[512] = {0};
+                    GetEnvironmentVariableA("WINEPREFIX", winePrefix, sizeof(winePrefix));
+                    if (winePrefix[0])
+                        snprintf(buf, sizeof(buf), "%s/drive_%c", winePrefix, drive);
+                    else
+                        snprintf(buf, sizeof(buf), "%s/.wine/drive_%c", home, drive);
+                    p = std::string(buf) + remaining;
+                }
+            }
+            else
+            {
+                char winePrefix[512] = {0};
+                GetEnvironmentVariableA("WINEPREFIX", winePrefix, sizeof(winePrefix));
+                if (winePrefix[0])
+                    snprintf(buf, sizeof(buf), "%s/drive_%c", winePrefix, drive);
+                else
+                    snprintf(buf, sizeof(buf), "%s/.wine/drive_%c", home, drive);
+                p = std::string(buf) + p.substr(2);
+            }
+        }
+    }
+
+    return p;
+}
+
+static void ScanKeybindFiles()
+{
+    g_KeybindFiles.clear();
+    g_KeybindFileIndex = -1;
+
+    char dbg[512];
+    snprintf(dbg, sizeof(dbg), "[KEYBINDS] ScanKeybindFiles start (IsWine=%d)", g_IsWine ? 1 : 0);
+    g_API->Log(LOGL_INFO, "GW2Accessibility", dbg);
+
+    // On Wine, convert the Windows user docs path to Unix via WinePathToUnix
+    if (g_IsWine)
+    {
+        const char* winePaths[] = {
+            "C:\\users\\steamuser\\Documents\\Guild Wars 2\\InputBinds\\",
+            "C:\\Users\\steamuser\\Documents\\Guild Wars 2\\InputBinds\\",
+        };
+
+        for (const char* winPath : winePaths)
+        {
+            std::string unixPath = WinePathToUnix(winPath);
+            if (unixPath.empty()) continue;
+
+            snprintf(dbg, sizeof(dbg), "[KEYBINDS] Trying Wine path: %s (from %s)", unixPath.c_str(), winPath);
+            g_API->Log(LOGL_INFO, "GW2Accessibility", dbg);
+
+            if (std::filesystem::exists(unixPath))
+            {
+                g_KeybindsFromRealDocs = true;
+                for (const auto& entry : std::filesystem::directory_iterator(unixPath))
+                {
+                    if (entry.is_regular_file() && entry.path().extension() == ".xml")
+                    {
+                        g_KeybindFiles.push_back(entry.path().filename().string());
+                    }
+                }
+                if (!g_KeybindFiles.empty())
+                {
+                    g_KeybindFileIndex = 0;
+                    g_KeybindBaseDir = unixPath;
+                    snprintf(dbg, sizeof(dbg), "[KEYBINDS] Found %zu files via Wine path", g_KeybindFiles.size());
+                    g_API->Log(LOGL_INFO, "GW2Accessibility", dbg);
+                    return;
+                }
+            }
+            else
+            {
+                snprintf(dbg, sizeof(dbg), "[KEYBINDS] Path does not exist: %s", unixPath.c_str());
+                g_API->Log(LOGL_INFO, "GW2Accessibility", dbg);
+            }
+        }
+
+        // Also try HOME-based path if HOME is set
+        char home[256] = {0};
+        GetEnvironmentVariableA("HOME", home, sizeof(home));
+        if (home[0] != '\0')
+        {
+            char realPath[512];
+            snprintf(realPath, sizeof(realPath), "%s/Documents/Guild Wars 2/InputBinds/", home);
+            snprintf(dbg, sizeof(dbg), "[KEYBINDS] Trying HOME docs path: %s", realPath);
+            g_API->Log(LOGL_INFO, "GW2Accessibility", dbg);
+
+            if (std::filesystem::exists(realPath))
+            {
+                g_KeybindsFromRealDocs = true;
+                for (const auto& entry : std::filesystem::directory_iterator(realPath))
+                {
+                    if (entry.is_regular_file() && entry.path().extension() == ".xml")
+                    {
+                        g_KeybindFiles.push_back(entry.path().filename().string());
+                    }
+                }
+                if (!g_KeybindFiles.empty())
+                {
+                    g_KeybindFileIndex = 0;
+                    g_KeybindBaseDir = std::string(realPath);
+                    snprintf(dbg, sizeof(dbg), "[KEYBINDS] Found %zu files via HOME path", g_KeybindFiles.size());
+                    g_API->Log(LOGL_INFO, "GW2Accessibility", dbg);
+                    return;
+                }
+            }
+        }
+    }
+
+    // Fall back to standard common directory path
+    const char* commonDir = g_API->Paths_GetCommonDirectory();
+    if (!commonDir)
+    {
+        g_API->Log(LOGL_INFO, "GW2Accessibility", "[KEYBINDS] Paths_GetCommonDirectory returned null");
+        return;
+    }
+
+    snprintf(dbg, sizeof(dbg), "[KEYBINDS] Paths_GetCommonDirectory: %s", commonDir);
+    g_API->Log(LOGL_INFO, "GW2Accessibility", dbg);
+
+    std::string basePath;
+    if (g_IsWine)
+    {
+        basePath = WinePathToUnix(commonDir);
+        if (!basePath.empty() && basePath.back() != '/')
+            basePath += '/';
+        basePath += "Guild Wars 2/InputBinds/";
+    }
+    else
+    {
+        basePath = commonDir;
+        if (!basePath.empty() && basePath.back() != '\\' && basePath.back() != '/')
+            basePath += '\\';
+        basePath += "Guild Wars 2\\InputBinds\\";
+    }
+
+    snprintf(dbg, sizeof(dbg), "[KEYBINDS] Trying common dir path: %s", basePath.c_str());
+    g_API->Log(LOGL_INFO, "GW2Accessibility", dbg);
+
+    if (!std::filesystem::exists(basePath))
+    {
+        snprintf(dbg, sizeof(dbg), "[KEYBINDS] Path does not exist: %s", basePath.c_str());
+        g_API->Log(LOGL_INFO, "GW2Accessibility", dbg);
+        return;
+    }
+
+    for (const auto& entry : std::filesystem::directory_iterator(basePath))
+    {
+        if (entry.is_regular_file() && entry.path().extension() == ".xml")
+        {
+            g_KeybindFiles.push_back(entry.path().filename().string());
+        }
+    }
+
+    if (!g_KeybindFiles.empty())
+    {
+        g_KeybindFileIndex = 0;
+        g_KeybindBaseDir = basePath;
+    }
+
+    snprintf(dbg, sizeof(dbg), "[KEYBINDS] Scanned %zu files from %s", g_KeybindFiles.size(), basePath.c_str());
+    g_API->Log(LOGL_INFO, "GW2Accessibility", dbg);
+}
+
+// GW2 uses its own button encoding — not ASCII, not Windows VK codes.
+// Confirmed from user keybind data:
+//   Codes  1-31  : custom codes for special/symbol keys
+//   Codes 32-43  : F1-F12 (override what would be ASCII punctuation)
+//   Codes 44-90  : mostly match ASCII uppercase/symbols (A-Z, digits, symbols)
+//   Code  91     : Numpad + (overrides ASCII '[')
+//   Codes 96-104 : Numpad 1-9 (override ASCII backtick/lowercase letters)
+static const char* Gw2ButtonToKeyName(unsigned int button)
+{
+    switch (button)
+    {
+        // Mouse buttons
+        case 1:   return "LMB";
+        case 2:   return "RMB";
+
+        // Symbol keys (GW2 codes, confirmed)
+        case 3:   return "'";
+        case 4:   return "\\";
+        case 6:   return ",";
+        case 10:  return "[";
+        case 12:  return ".";
+        case 13:  return "]";
+        case 14:  return ";";
+        case 15:  return "/";
+
+        // Other special keys (codes < 32)
+        case 9:   return "Tab";
+        case 17:  return "Caps Lock";
+        case 18:  return "Backspace";
+        case 20:  return "Enter";
+        case 22:  return "Tab";
+        case 27:  return "Escape";
+
+        // F1–F12 at codes 32–43 (GW2 encoding; these override ASCII punctuation)
+        case 32:  return "F1";
+        case 33:  return "F2";
+        case 34:  return "F3";
+        case 35:  return "F4";
+        case 36:  return "F5";
+        case 37:  return "F6";
+        case 38:  return "F7";
+        case 39:  return "F8";
+        case 40:  return "F9";
+        case 41:  return "F10";
+        case 42:  return "F11";
+        case 43:  return "F12";
+
+        // Numpad keys (GW2 encoding; these override ASCII in the same range)
+        case 91:  return "Num+";
+        case 96:  return "F1";
+        case 97:  return "F2";
+        case 98:  return "F3";
+        case 99:  return "F4";
+        case 100: return "F5";
+        case 101: return "F6";
+        case 102: return "F7";
+        case 103: return "F8";
+        case 104: return "F9";
+
+        default: break;
+    }
+
+    // Remaining printable range: letter keys (A-Z = 65-90) and other symbols
+    // use their ASCII code directly. Skip the ranges overridden above (32-43, 91, 96-104).
+    if ((button >= 44 && button <= 90) ||
+        (button >= 92 && button <= 95) ||
+        (button >= 105 && button <= 126))
+    {
+        static char buf[2];
+        buf[0] = static_cast<char>(button);
+        buf[1] = '\0';
+        return buf;
+    }
+
+    return "?";
+}
+
+// mod bitmask: bit0=Shift(1), bit1=Ctrl(2), bit2=Alt(4); combinations e.g. 3=Ctrl+Shift
+static std::string FormatBind(unsigned int button, unsigned int mod)
+{
+    std::string s;
+    if (mod & 2) s += "Ctrl+";
+    if (mod & 1) s += "Shift+";
+    if (mod & 4) s += "Alt+";
+    s += Gw2ButtonToKeyName(button);
+    return s;
+}
+
+static std::string CategorizeAction(const std::string& n)
+{
+    const auto np = std::string::npos;
+
+    // ── Movement ─────────────────────────────────────────────────────────────
+    if (n == "Move Forward"   || n == "Move Backward" ||
+        n == "Strafe Left"    || n == "Strafe Right"  ||
+        n == "Turn Left"      || n == "Turn Right"    ||
+        n == "Dodge"          || n == "Autorun"       || n == "Walk" ||
+        n == "About Face"     ||
+        n.find("Jump")   != np || n.find("Swim") != np ||
+        n.find("Fly Up") != np || n.find("Fly Down") != np)
+        return "Movement";
+
+    // ── Skills ───────────────────────────────────────────────────────────────
+    if (n == "Swap Weapons"        || n == "Stow/Draw Weapons"   ||
+        n == "Healing Skill"       || n == "Elite Skill"          ||
+        n == "Special Action"      || n == "Activate Mastery Skill" ||
+        n.find("Weapon Skill")    != np ||
+        n.find("Utility Skill")   != np ||
+        n.find("Profession Skill") != np ||
+        n.find("Ranger Pet")      != np)
+        return "Skills";
+
+    // ── Targeting ────────────────────────────────────────────────────────────
+    if (n == "Alert Target"         || n == "Call Target"           ||
+        n == "Take Target"          || n == "Set Personal Target"   ||
+        n == "Take Personal Target" ||
+        n == "Nearest Enemy"        || n == "Next Enemy"            ||
+        n == "Previous Enemy"       ||
+        n == "Nearest Ally"         || n == "Next Ally"             ||
+        n == "Previous Ally"        ||
+        n.find("Autotarget")       != np ||
+        n.find("Targeting")        != np ||
+        n.find("Snap Ground Target") != np)
+        return "Targeting";
+
+    // ── Templates ────────────────────────────────────────────────────────────
+    if (n.find("Template") != np)
+        return "Templates";
+
+    // ── Mounts ───────────────────────────────────────────────────────────────
+    if (n.find("Mount")        != np || n == "Dismount"       ||
+        n.find("Springer")     != np || n.find("Raptor")      != np ||
+        n.find("Skimmer")      != np || n.find("Jackal")      != np ||
+        n.find("Roller Beetle") != np || n.find("Warclaw")    != np ||
+        n.find("Griffon")      != np || n.find("Siege Turtle") != np ||
+        n.find("Skyscale")     != np)
+        return "Mounts";
+
+    // ── Squad (markers + broadcasts + spectators) ─────────────────────────────
+    if (n == "Arrow"   || n == "Circle" || n == "Heart"  ||
+        n == "Square"  || n == "Star"   || n == "Spiral" ||
+        n == "Triangle" || n == "X"     ||
+        n.find("Object Marker")   != np ||
+        n.find("Location Marker") != np ||
+        n.find("Spectator")       != np ||
+        n.find("Squad")           != np)
+        return "Squad";
+
+    // ── Camera ───────────────────────────────────────────────────────────────
+    if (n.find("Action Camera") != np ||
+        n == "Free Camera"       ||
+        n == "Zoom In"           || n == "Zoom Out")
+        return "Camera";
+
+    // ── Screenshot ───────────────────────────────────────────────────────────
+    if (n == "Stereoscopic" || n.find("Screenshot") != np)
+        return "Screenshot";
+
+    // ── Map ──────────────────────────────────────────────────────────────────
+    if (n == "Open/Close"        ||
+        n.find("Recenter") != np ||
+        n.find("Floor")    != np ||
+        n == "Scan for Rift"     ||
+        n == "Zoom In"           || n == "Zoom Out")
+        return "Map";
+
+    // ── UI (panels, dialogs, chat, show/hide, toggles) ────────────────────────
+    if (n.find("Dialog")    != np || n.find("Dialogue")   != np ||
+        n.find("Show/Hide") != np || n.find("Chat")       != np ||
+        n == "Scoreboard"        || n == "Log Out"         ||
+        n.find("Options")  != np || n.find("Information") != np ||
+        n.find("Vault")    != np ||
+        n == "Toggle Full Screen" || n == "Toggle Language" ||
+        n.find("Show Enemy Names") != np ||
+        n.find("Show Ally Names")  != np ||
+        n.find("Conjured Doorway") != np)
+        return "UI";
+
+    return "General";
+}
+
+static bool ParseKeybindXml(const std::string& xmlContent, std::vector<KeybindEntry>& out)
+{
+    out.clear();
+
+    const char* xml = xmlContent.c_str();
+    const char* actionTag = "<action name=\"";
+    size_t pos = 0;
+
+    while (true)
+    {
+        const char* actionStart = strstr(xml + pos, actionTag);
+        if (!actionStart) break;
+
+        size_t nameStart = (actionStart - xml) + strlen(actionTag);
+        const char* nameEnd = strchr(xml + nameStart, '"');
+        if (!nameEnd) break;
+
+        std::string actionName(xml + nameStart, nameEnd - (xml + nameStart));
+
+        // Bound all searches to the current action tag to prevent cross-action bleed
+        const char* tagEnd = strstr(nameEnd, "/>");
+        if (!tagEnd) { pos = nameStart; continue; }
+
+        // Primary binding: device="Keyboard" button="N" mod="M"
+        bool hasPrimary = false;
+        unsigned int button = 0, mod = 0;
+        const char* deviceStr = strstr(nameEnd, "device=\"Keyboard\"");
+        if (deviceStr && deviceStr < tagEnd)
+        {
+            const char* buttonStr = strstr(deviceStr, "button=\"");
+            if (buttonStr && buttonStr < tagEnd)
+            {
+                button = static_cast<unsigned int>(strtoul(buttonStr + 8, nullptr, 10));
+                const char* modStr = strstr(buttonStr + 8, " mod=\"");
+                if (modStr && modStr < tagEnd)
+                    mod = static_cast<unsigned int>(strtoul(modStr + 6, nullptr, 10));
+                hasPrimary = true;
+            }
+        }
+
+        // Secondary binding: device2="Keyboard" button2="N" mod2="M"
+        bool hasSecondary = false;
+        unsigned int button2 = 0, mod2 = 0;
+        const char* device2Str = strstr(nameEnd, "device2=\"Keyboard\"");
+        if (device2Str && device2Str < tagEnd)
+        {
+            const char* button2Str = strstr(device2Str, "button2=\"");
+            if (button2Str && button2Str < tagEnd)
+            {
+                button2 = static_cast<unsigned int>(strtoul(button2Str + 9, nullptr, 10));
+                const char* mod2Str = strstr(button2Str + 9, " mod2=\"");
+                if (mod2Str && mod2Str < tagEnd)
+                    mod2 = static_cast<unsigned int>(strtoul(mod2Str + 7, nullptr, 10));
+                hasSecondary = true;
+            }
+        }
+
+        // Skip actions with no keyboard binding at all
+        if (!hasPrimary && !hasSecondary)
+        {
+            pos = nameStart;
+            continue;
+        }
+
+        KeybindEntry e;
+        e.category = CategorizeAction(actionName);
+        e.name     = actionName;
+        if (hasPrimary)
+        {
+            e.rawButton = button;
+            e.rawMod    = mod;
+            e.key       = FormatBind(button, mod);
+        }
+        if (hasSecondary)
+        {
+            e.rawButton2 = button2;
+            e.rawMod2    = mod2;
+            e.key2       = FormatBind(button2, mod2);
+        }
+
+        out.push_back(e);
+
+        pos = nameStart;
+    }
+
+    return !out.empty();
+}
+
+static void LoadKeybindFile(int index)
+{
+    if (index < 0 || index >= static_cast<int>(g_KeybindFiles.size())) return;
+
+    std::string xmlPath;
+
+    if (!g_ManualKeybindPath.empty() && index == g_KeybindFileIndex)
+    {
+        xmlPath = g_ManualKeybindPath;
+    }
+    else if (!g_KeybindBaseDir.empty())
+    {
+        xmlPath = g_KeybindBaseDir + g_KeybindFiles[index];
+    }
+    else
+    {
+        // Fallback: reconstruct from API common directory (path style matches Wine/native)
+        const char* commonDir = g_API->Paths_GetCommonDirectory();
+        if (!commonDir) return;
+
+        if (g_IsWine)
+        {
+            std::string basePath = WinePathToUnix(commonDir);
+            if (!basePath.empty() && basePath.back() != '/')
+                basePath += '/';
+            xmlPath = basePath + "Guild Wars 2/InputBinds/" + g_KeybindFiles[index];
+        }
+        else
+        {
+            std::string basePath = commonDir;
+            if (!basePath.empty() && basePath.back() != '\\' && basePath.back() != '/')
+                basePath += '\\';
+            xmlPath = basePath + "Guild Wars 2\\InputBinds\\" + g_KeybindFiles[index];
+        }
+    }
+
+    std::ifstream file(xmlPath);
+    if (!file.is_open())
+    {
+        char buf[256];
+        snprintf(buf, sizeof(buf), "[KEYBINDS] Failed to open: %s", xmlPath.c_str());
+        g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
+        return;
+    }
+
+    std::string xmlContent((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    file.close();
+
+    char dbg[256];
+    snprintf(dbg, sizeof(dbg), "[KEYBINDS] Parsing %zu bytes from %s", xmlContent.size(), g_KeybindFiles[index].c_str());
+    g_API->Log(LOGL_INFO, "GW2Accessibility", dbg);
+
+    ParseKeybindXml(xmlContent, g_Keybinds);
+
+    g_KeybindsLoaded = true;
+    snprintf(dbg, sizeof(dbg), "[KEYBINDS] Loaded %zu bindings from %s", g_Keybinds.size(), g_KeybindFiles[index].c_str());
+    g_API->Log(LOGL_INFO, "GW2Accessibility", dbg);
+}
+
 // ── Config Path ──────────────────────────────────────────────────────────────
 
 static std::string GetConfigPath()
@@ -732,6 +1745,25 @@ static void SaveSettings()
     j["holdMode"] = g_HoldMode;
     j["crosshairEnabled"] = g_CrosshairEnabled;
     j["crosshairColor"] = { g_CrosshairColor[0], g_CrosshairColor[1], g_CrosshairColor[2], g_CrosshairColor[3] };
+    j["keybindOverlayEnabled"] = g_KeybindOverlayEnabled;
+    j["keybindVisibility"] = g_KeybindVisibility;
+    j["keybindShowMovement"]   = g_KeybindShowMovement;
+    j["keybindShowSkills"]     = g_KeybindShowSkills;
+    j["keybindShowTargeting"]  = g_KeybindShowTargeting;
+    j["keybindShowMounts"]     = g_KeybindShowMounts;
+    j["keybindShowSquad"]      = g_KeybindShowSquad;
+    j["keybindShowCamera"]     = g_KeybindShowCamera;
+    j["keybindShowScreenshot"] = g_KeybindShowScreenshot;
+    j["keybindShowMap"]        = g_KeybindShowMap;
+    j["keybindShowUI"]         = g_KeybindShowUI;
+    j["keybindShowTemplates"]  = g_KeybindShowTemplates;
+    j["keybindPositionAnchor"] = static_cast<int>(g_KeybindPosition.anchor);
+    j["keybindPositionX"] = g_KeybindPosition.offsetXPct;
+    j["keybindPositionY"] = g_KeybindPosition.offsetYPct;
+    j["keybindOpacity"] = g_KeybindOverlayOpacity;
+    j["keybindFileIndex"] = g_KeybindFileIndex;
+    j["keybindFile"] = (g_KeybindFileIndex >= 0 && g_KeybindFileIndex < static_cast<int>(g_KeybindFiles.size())) ? g_KeybindFiles[g_KeybindFileIndex] : "";
+    j["manualKeybindPath"] = g_ManualKeybindPath;
     j["iconDisplayEnabled"] = g_IconDisplayEnabled;
     j["iconSize"] = g_IconSize;
     j["iconSpacing"] = g_IconSpacing;
@@ -739,7 +1771,21 @@ static void SaveSettings()
     j["iconAnchor"] = static_cast<int>(g_IconPosition.anchor);
     j["iconOffsetX"] = g_IconPosition.offsetXPct;
     j["iconOffsetY"] = g_IconPosition.offsetYPct;
+    {
+        nlohmann::json arr = nlohmann::json::array();
+        for (auto id : g_TrackedConditionsExtra)
+            arr.push_back(id);
+        j["trackedConditionsExtra"] = arr;
+    }
+    {
+        nlohmann::json arr = nlohmann::json::array();
+        for (auto id : g_TrackedBuffsExtra)
+            arr.push_back(id);
+        j["trackedBuffsExtra"] = arr;
+    }
+
     j["foodUtilityExpiry"] = g_FoodUtilityExpiryEnabled;
+    j["readyCheckTts"] = g_ReadyCheckTtsEnabled;
     j["allyDownedEnabled"] = g_AllyDownedEnabled;
     j["allyDownedSquadOnly"] = g_AllyDownedSquadOnly;
     j["tofusToggle"] = g_TofusToggle;
@@ -816,6 +1862,40 @@ static void LoadSettings()
         if (chColor.is_array() && chColor.size() >= 4)
             for (int i = 0; i < 4; i++)
                 g_CrosshairColor[i] = chColor[i].get<float>();
+        g_KeybindOverlayEnabled = j.value("keybindOverlayEnabled", false);
+        g_KeybindVisibility = j.value("keybindVisibility", KV_Always);
+        g_KeybindShowMovement   = j.value("keybindShowMovement",   true);
+        g_KeybindShowSkills     = j.value("keybindShowSkills",     true);
+        g_KeybindShowTargeting  = j.value("keybindShowTargeting",  false);
+        g_KeybindShowMounts     = j.value("keybindShowMounts",     true);
+        g_KeybindShowSquad      = j.value("keybindShowSquad",      false);
+        g_KeybindShowCamera     = j.value("keybindShowCamera",     false);
+        g_KeybindShowScreenshot = j.value("keybindShowScreenshot", false);
+        g_KeybindShowMap        = j.value("keybindShowMap",        false);
+        g_KeybindShowUI         = j.value("keybindShowUI",         false);
+        g_KeybindShowTemplates  = j.value("keybindShowTemplates",  false);
+        int keybindAnchor = j.value("keybindPositionAnchor", static_cast<int>(AnchorPoint::MiddleLeft));
+        keybindAnchor = std::clamp(keybindAnchor, 0, static_cast<int>(AnchorPoint::COUNT) - 1);
+        g_KeybindPosition.anchor = static_cast<AnchorPoint>(keybindAnchor);
+        g_KeybindPosition.offsetXPct = j.value("keybindPositionX", 2.0f);
+        g_KeybindPosition.offsetYPct = j.value("keybindPositionY", 0.0f);
+        g_KeybindOverlayOpacity = j.value("keybindOpacity", 0.4f);
+        ScanKeybindFiles();
+        g_ManualKeybindPath = j.value("manualKeybindPath", "");
+        std::string savedFile = j.value("keybindFile", "");
+        if (!savedFile.empty())
+        {
+            for (int i = 0; i < static_cast<int>(g_KeybindFiles.size()); i++)
+            {
+                if (g_KeybindFiles[i] == savedFile)
+                {
+                    g_KeybindFileIndex = i;
+                    break;
+                }
+            }
+        }
+        if (g_KeybindFileIndex >= 0)
+            LoadKeybindFile(g_KeybindFileIndex);
         g_IconDisplayEnabled = j.value("iconDisplayEnabled", false);
         g_IconSize = j.value("iconSize", 32.0f);
         g_IconSpacing = j.value("iconSpacing", 4.0f);
@@ -825,7 +1905,20 @@ static void LoadSettings()
         g_IconPosition.anchor = static_cast<AnchorPoint>(iconAnchor);
         g_IconPosition.offsetXPct = j.value("iconOffsetX", 0.0f);
         g_IconPosition.offsetYPct = j.value("iconOffsetY", -10.0f);
+        g_TrackedConditionsExtra.clear();
+        auto& tce = j["trackedConditionsExtra"];
+        if (tce.is_array())
+            for (const auto& v : tce)
+                g_TrackedConditionsExtra.insert(v.get<unsigned int>());
+
+        g_TrackedBuffsExtra.clear();
+        auto& tbe = j["trackedBuffsExtra"];
+        if (tbe.is_array())
+            for (const auto& v : tbe)
+                g_TrackedBuffsExtra.insert(v.get<unsigned int>());
+
         g_FoodUtilityExpiryEnabled = j.value("foodUtilityExpiry", false);
+        g_ReadyCheckTtsEnabled = j.value("readyCheckTts", false);
         g_AllyDownedEnabled = j.value("allyDownedEnabled", false);
         g_AllyDownedSquadOnly = j.value("allyDownedSquadOnly", false);
         g_TofusToggle = j.value("tofusToggle", false);
@@ -1026,8 +2119,6 @@ static void InitSAPI()
 {
     if (g_TtsReady) return;
 
-    g_IsWine = DetectWine();
-
     HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     char buf[256];
     if (FAILED(hr))
@@ -1067,7 +2158,14 @@ static void InitSAPI()
 static void OnCombatEvent(void* aEventArgs)
 {
     auto* cbt = static_cast<const EvCombatData*>(aEventArgs);
-    if (!cbt->ev) return;
+
+    // ev == null: agent tracking event (add/remove). Use to detect initial squad state.
+    if (!cbt->ev)
+    {
+        if (cbt->src && cbt->src->Profession && cbt->dst && cbt->dst->IsSelf)
+            g_InSquad = (cbt->src->Team > 0);
+        return;
+    }
 
     // ── Tofu's Toggle — boss death detection ────────────────────────────
     // Detects Keep Construct specifically by tracking dst name from buff events.
@@ -1102,10 +2200,16 @@ static void OnCombatEvent(void* aEventArgs)
     {
         if (cbt->src && cbt->src->IsSelf)
         {
-            uint16_t newTeam = static_cast<uint16_t>(cbt->ev->DestinationAgent);
-            g_InSquad = (newTeam > 0);
+            g_InSquad = (cbt->ev->DestinationAgent > 0);
         }
         return;
+    }
+
+    // ── Combat state tracking ────────────────────────────────────────────
+    {
+        uint32_t state = cbt->ev->IsStatechange;
+        if (state == 1 && cbt->src && cbt->src->IsSelf) g_InCombat = true;
+        if (state == 2 && cbt->src && cbt->src->IsSelf) g_InCombat = false;
     }
 
     if (!cbt->dst) return;
@@ -1174,30 +2278,26 @@ static void OnCombatEvent(void* aEventArgs)
         g_API->Log(LOGL_DEBUG, "GW2Accessibility", "[COMBAT] IsStatechange != 0 (state change event) — ignored");
         return;
     }
-    if (cbt->dst->IsSelf != 1)
-    {
-        g_API->Log(LOGL_DEBUG, "GW2Accessibility", "[COMBAT] dst->IsSelf != 1 (not on player) — ignored");
-        return;
-    }
-
-    // Skip debuff reading in WvW (too much noise from enemy conditions)
-    if (IsWvwMap())
-    {
-        g_API->Log(LOGL_DEBUG, "GW2Accessibility", "[COMBAT] on WvW map — ignored");
-        return;
-    }
 
     unsigned int skillID = NormalizeMechanicID(cbt->ev->SkillID);
     bool isRemove = (cbt->ev->IsBuffRemove != 0);
     DWORD now = GetTickCount();
 
+    bool isOnSelf = (cbt->dst && cbt->dst->IsSelf == 1);
+
+    {
+        char buf[512];
+        snprintf(buf, sizeof(buf), "[COMBAT] event skill=%u Buff=%u IsStatechange=%u isRemove=%u IsBuffRemove=%u dst->IsSelf=%u skillname=%s",
+            skillID, (unsigned)cbt->ev->Buff, (unsigned)cbt->ev->IsStatechange, isRemove, (unsigned)cbt->ev->IsBuffRemove,
+            cbt->dst ? (unsigned)cbt->dst->IsSelf : 99,
+            cbt->skillname ? cbt->skillname : "(null)");
+        g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
+    }
+
     // ── Track active mechanics for icon display ──────────────────────────────
     // Runs independently of TTS/Announce settings
     if (isRemove)
     {
-        // Only clear on full remove (IsBuffRemove == 1).
-        // Single-stack remove (IsBuffRemove == 2) means a stack was consumed
-        // but the effect is still active (e.g. Biting Swarm).
         if (cbt->ev->IsBuffRemove == 1)
             g_ActiveMechanics.erase(skillID);
     }
@@ -1222,6 +2322,45 @@ static void OnCombatEvent(void* aEventArgs)
                 }
             }
         }
+    }
+
+    // ── Collect non-standard effects for management window ──────────────
+    // Only collects effects ON the player
+    if (isOnSelf && !isRemove && !IsCondition(skillID) && !IsBoon(skillID))
+    {
+        if (g_EncounteredEffects.find(skillID) == g_EncounteredEffects.end())
+        {
+            const char* name = nullptr;
+            if (cbt->skillname && cbt->skillname[0])
+                name = cbt->skillname;
+            else
+            {
+                auto builtin = g_BuiltinBuffNames.find(skillID);
+                if (builtin != g_BuiltinBuffNames.end())
+                    name = builtin->second;
+            }
+
+            char nameBuf[256];
+            if (name)
+                snprintf(nameBuf, sizeof(nameBuf), "%s", name);
+            else
+                snprintf(nameBuf, sizeof(nameBuf), "Unknown (%u)", skillID);
+
+            g_EncounteredEffects[skillID] = nameBuf;
+            char buf[256];
+            snprintf(buf, sizeof(buf), "[EFFECT_MGR] discovered skill=%u name=\"%s\"", skillID, nameBuf);
+            g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
+        }
+    }
+
+    // ── TTS filters (dst must be self, skip in WvW) ─────────────────────────
+    if (!cbt->dst || cbt->dst->IsSelf != 1)
+    {
+        return;
+    }
+    if (IsWvwMap())
+    {
+        return;
     }
 
     // ── Gate TTS speech behind settings ──────────────────────────────────────
@@ -1261,26 +2400,41 @@ static void OnCombatEvent(void* aEventArgs)
             if (fuIt != g_TrackedFoodUtility.end() && now - fuIt->second >= g_FoodUtilityMinDuration)
             {
                 std::string buffName = FetchSkillName(skillID, cbt->skillname);
-                bool isFood = false;
-                if (buffName.size() >= 6)
-                {
-                    std::string end6 = buffName.substr(buffName.size() - 6);
-                    if (end6 == "Steak" || end6 == "steak" || end6 == "adbread")
-                        isFood = true;
-                }
-                if (buffName.find("Salad") != std::string::npos ||
-                    buffName.find("salad") != std::string::npos ||
-                    buffName.find("Soup") != std::string::npos ||
-                    buffName.find("soup") != std::string::npos ||
-                    buffName.find("Pancake") != std::string::npos ||
-                    buffName.find("pancake") != std::string::npos)
-                    isFood = true;
 
-                const char* speech = isFood ? "food expired" : "utility expired";
-                InitSAPI();
-                if (g_TtsReady)
+                static const char* FOOD_KEYWORDS[] = {
+                    "Steak", "Soup", "Salad", "Flatbread", "Rendang", "Ball",
+                    "Pie", "Cake", "Cookie", "Bread", "Stew", "Chowder",
+                    "Risotto", "Burger", "Sandwich", "Feast", "Bowl", "Plate",
+                    "Tray", "Sushi", "Ravioli", "Cheesecake", "Omnomberry",
+                    "Cilantro", "Tarragon", "Roasted", "Grilled", "Fried",
+                    "Braised", "Carpaccio", "Brulee", "Hotpot", "Meatball",
+                    "Clam", "Salmon", "Chocolate", "Curry", "Skillet",
+                };
+                static const char* UTILITY_KEYWORDS[] = {
+                    "Sharpening", "Crystal", "Oil", "Tuning", "Maintenance",
+                    "Writ", "Thesis", "Slaying", "Potion", "Venom",
+                    "Primer", "Icicle", "Lucent", "Station", "Skale",
+                };
+
+                auto nameContains = [&](const char* kw) {
+                    return buffName.find(kw) != std::string::npos;
+                };
+
+                bool isFood = false;
+                for (const char* kw : FOOD_KEYWORDS)
+                    if (nameContains(kw)) { isFood = true; break; }
+
+                bool isUtility = false;
+                if (!isFood)
+                    for (const char* kw : UTILITY_KEYWORDS)
+                        if (nameContains(kw)) { isUtility = true; break; }
+
+                if (isFood || isUtility)
                 {
-                    SpeakText(Utf8ToWide(speech).c_str());
+                    const char* speech = isFood ? "food expired" : "utility expired";
+                    InitSAPI();
+                    if (g_TtsReady)
+                        SpeakText(Utf8ToWide(speech).c_str());
                 }
             }
             g_TrackedFoodUtility.erase(skillID);
@@ -1843,6 +2997,8 @@ static void OnRender()
             x += g_IconSize + g_IconSpacing;
         }
     }
+
+
 }
 
 // ── Options UI ───────────────────────────────────────────────────────────────
@@ -1947,13 +3103,6 @@ static void OnMechanicsWindowRender()
             changed = true;
         }
 
-        ImGui::SameLine();
-        if (ImGui::Button("Remove"))
-        {
-            toRemove = static_cast<int>(i);
-            changed = true;
-        }
-
         ImGui::PopID();
     }
 
@@ -1963,6 +3112,505 @@ static void OnMechanicsWindowRender()
     ImGui::Separator();
     ImGui::TextDisabled("Toggle TTS and/or Icon alerts per mechanic.");
     ImGui::TextDisabled("Skill IDs come from ArcdpsIntegration combat events.");
+
+    ImGui::End();
+
+    if (changed)
+        SaveSettings();
+}
+
+// ── Effect Management Window ───────────────────────────────────────────
+
+static void OnEffectManagerRender()
+{
+    SetupImGui();
+    if (!g_ShowEffectManager) return;
+
+    if (!ImGui::Begin("Effect Manager", &g_ShowEffectManager, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ImGui::End();
+        return;
+    }
+
+    ImGui::TextUnformatted("Non-standard effects encountered during gameplay:");
+    ImGui::TextDisabled("Check 'Cond Table' or 'Buff Table' to track them in those overlays.");
+    ImGui::TextDisabled("Standard conditions/boons are always included automatically.");
+    ImGui::Separator();
+
+    if (g_EncounteredEffects.empty())
+    {
+        ImGui::TextDisabled("No effects discovered yet. Play the game to encounter effects.");
+    }
+    else
+    {
+        bool changed = false;
+
+        // Sort by name for easier browsing
+        std::vector<std::pair<unsigned int, std::string>> sorted(
+            g_EncounteredEffects.begin(), g_EncounteredEffects.end());
+        std::sort(sorted.begin(), sorted.end(),
+            [](const auto& a, const auto& b) { return a.second < b.second; });
+
+        ImGui::Columns(3, nullptr, false);
+        ImGui::TextUnformatted("Effect"); ImGui::NextColumn();
+        ImGui::TextUnformatted("Cond Table"); ImGui::NextColumn();
+        ImGui::TextUnformatted("Buff Table"); ImGui::NextColumn();
+        ImGui::Separator();
+
+        for (const auto& entry : sorted)
+        {
+            unsigned int id = entry.first;
+            const std::string& name = entry.second;
+
+            ImGui::PushID(static_cast<int>(id));
+            ImGui::Text("%s (%u)", name.c_str(), id); ImGui::NextColumn();
+
+            bool inCond = g_TrackedConditionsExtra.count(id) > 0;
+            if (ImGui::Checkbox("##cond", &inCond))
+            {
+                if (inCond) g_TrackedConditionsExtra.insert(id);
+                else g_TrackedConditionsExtra.erase(id);
+                changed = true;
+            }
+            ImGui::NextColumn();
+
+            bool inBuff = g_TrackedBuffsExtra.count(id) > 0;
+            if (ImGui::Checkbox("##buff", &inBuff))
+            {
+                if (inBuff) g_TrackedBuffsExtra.insert(id);
+                else g_TrackedBuffsExtra.erase(id);
+                changed = true;
+            }
+            ImGui::NextColumn();
+
+            ImGui::PopID();
+        }
+
+        ImGui::Columns(1);
+
+        // Clear button
+        ImGui::Separator();
+        if (ImGui::Button("Clear All Discovered Effects"))
+        {
+            g_EncounteredEffects.clear();
+            g_TrackedConditionsExtra.clear();
+            g_TrackedBuffsExtra.clear();
+            changed = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Reset Cond Table Extras"))
+        {
+            g_TrackedConditionsExtra.clear();
+            changed = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Reset Buff Table Extras"))
+        {
+            g_TrackedBuffsExtra.clear();
+            changed = true;
+        }
+
+        if (changed)
+            SaveSettings();
+    }
+
+    ImGui::End();
+}
+
+// ── Keybind Overlay Window ─────────────────────────────────────────────
+
+static void OnKeybindOverlayRender()
+{
+    SetupImGui();
+
+    if (!g_KeybindOverlayEnabled) return;
+    if (g_KeybindVisibility == KV_InCombatOnly && !g_InCombat) return;
+    if (g_KeybindVisibility == KV_OutOfCombatOnly && g_InCombat) return;
+
+    if (!g_KeybindsLoaded)
+        LoadKeybindFile(g_KeybindFileIndex);
+
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar |
+                             ImGuiWindowFlags_NoResize |
+                             ImGuiWindowFlags_NoMove |
+                             ImGuiWindowFlags_NoFocusOnAppearing |
+                             ImGuiWindowFlags_NoBringToFrontOnFocus |
+                             ImGuiWindowFlags_NoMouseInputs |
+                             ImGuiWindowFlags_AlwaysAutoResize |
+                             ImGuiWindowFlags_NoSavedSettings;
+
+    ImVec2 displaySize = ImGui::GetIO().DisplaySize;
+    int idx = static_cast<int>(g_KeybindPosition.anchor);
+    int col = idx % 3;
+    int row = idx / 3;
+    float baseX = (col == 0) ? 0.0f : (col == 1) ? displaySize.x * 0.5f : displaySize.x;
+    float baseY = (row == 0) ? 0.0f : (row == 1) ? displaySize.y * 0.5f : displaySize.y;
+    float offsetX = (g_KeybindPosition.offsetXPct / 100.0f) * displaySize.x;
+    float offsetY = (g_KeybindPosition.offsetYPct / 100.0f) * displaySize.y;
+
+    ImGui::SetNextWindowPos(ImVec2(baseX + offsetX, baseY + offsetY));
+    ImGui::SetNextWindowBgAlpha(g_KeybindOverlayOpacity);
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, g_KeybindOverlayOpacity);
+
+    if (!ImGui::Begin("##KeybindOverlay", nullptr, flags))
+    {
+        ImGui::PopStyleVar();
+        ImGui::End();
+        return;
+    }
+
+    auto findKey = [](const char* actionName) -> std::string {
+        for (const auto& kb : g_Keybinds)
+        {
+            if (kb.name == actionName)
+            {
+                // Primary missing but secondary present (e.g. Jump with only a secondary set)
+                if (kb.key.empty())
+                    return kb.key2.empty() ? "?" : kb.key2;
+                if (!kb.key2.empty() && kb.key2 != kb.key)
+                    return kb.key + "/" + kb.key2;
+                return kb.key;
+            }
+        }
+        // GW2 omits default bindings from the XML export entirely.
+        // These are the standard defaults used when no XML entry exists.
+        static const struct { const char* name; const char* key; } DEFAULTS[] = {
+            { "Move Forward",            "W"     },
+            { "Move Backward",           "S"     },
+            { "Jump / Swim Up / Fly Up", "Space" },
+            { "Swim Down / Fly Down",    "Space" },
+            { "Autorun",                 "R"     },
+        };
+        for (const auto& d : DEFAULTS)
+            if (strcmp(actionName, d.name) == 0) return d.key;
+        return "?";
+    };
+
+    // Second column starts at this x offset from window left
+    const float COL2 = 105.0f;
+
+    // Generic category renderer: prints all keybinds in that category
+    auto renderCat = [](const char* title, const char* catName) {
+        ImGui::TextDisabled(title);
+        ImGui::Separator();
+        for (const auto& kb : g_Keybinds)
+        {
+            if (kb.category != catName) continue;
+            if (kb.key.empty() && kb.key2.empty()) continue;
+            if (!kb.key2.empty() && kb.key2 != kb.key)
+                ImGui::Text("%-24s %s/%s", kb.name.c_str(), kb.key.c_str(), kb.key2.c_str());
+            else
+                ImGui::Text("%-24s %s", kb.name.c_str(), kb.key.c_str());
+        }
+        ImGui::Dummy(ImVec2(0, 3));
+    };
+
+    if (g_KeybindShowMovement)
+    {
+        ImGui::TextDisabled("Movement");
+        ImGui::Separator();
+        ImGui::Text("Fwd:   %s", findKey("Move Forward").c_str());
+        ImGui::SameLine(COL2); ImGui::Text("Back:  %s", findKey("Move Backward").c_str());
+        ImGui::Text("Left:  %s", findKey("Strafe Left").c_str());
+        ImGui::SameLine(COL2); ImGui::Text("Right: %s", findKey("Strafe Right").c_str());
+        ImGui::Text("Jump:  %s", findKey("Jump / Swim Up / Fly Up").c_str());
+        ImGui::SameLine(COL2); ImGui::Text("Dodge: %s", findKey("Dodge").c_str());
+        ImGui::Text("Run:   %s", findKey("Autorun").c_str());
+        ImGui::SameLine(COL2); ImGui::Text("Face:  %s", findKey("About Face").c_str());
+        ImGui::Dummy(ImVec2(0, 3));
+    }
+
+    if (g_KeybindShowSkills)
+    {
+        ImGui::TextDisabled("Skills");
+        ImGui::Separator();
+        ImGui::Text("Skill 1:  %s", findKey("Weapon Skill 1").c_str());
+        ImGui::Text("Skill 2:  %s", findKey("Weapon Skill 2").c_str());
+        ImGui::Text("Skill 3:  %s", findKey("Weapon Skill 3").c_str());
+        ImGui::Text("Skill 4:  %s", findKey("Weapon Skill 4").c_str());
+        ImGui::Text("Skill 5:  %s", findKey("Weapon Skill 5").c_str());
+        ImGui::Text("Heal:     %s", findKey("Healing Skill").c_str());
+        ImGui::Text("Util 1:   %s", findKey("Utility Skill 1").c_str());
+        ImGui::Text("Util 2:   %s", findKey("Utility Skill 2").c_str());
+        ImGui::Text("Util 3:   %s", findKey("Utility Skill 3").c_str());
+        ImGui::Text("Elite:    %s", findKey("Elite Skill").c_str());
+        ImGui::Text("Special:  %s", findKey("Special Action").c_str());
+        ImGui::Text("Swap:     %s", findKey("Swap Weapons").c_str());
+        ImGui::Dummy(ImVec2(0, 3));
+    }
+
+    if (g_KeybindShowTargeting)
+        renderCat("Targeting", "Targeting");
+
+    if (g_KeybindShowMounts)
+    {
+        ImGui::TextDisabled("Mounts");
+        ImGui::Separator();
+        ImGui::Text("Mount:    %s", findKey("Mount/Dismount").c_str());
+        ImGui::SameLine(COL2); ImGui::Text("Ability1: %s", findKey("Mount Ability 1").c_str());
+        static const char* MOUNT_NAMES[] = {
+            "Raptor Mount/Dismount",  "Springer Mount/Dismount",
+            "Skimmer Mount/Dismount", "Jackal Mount/Dismount",
+            "Roller Beetle Mount/Dismount", "Warclaw Mount/Dismount",
+            "Griffon Mount/Dismount", "Skyscale Mount/Dismount"
+        };
+        static const char* MOUNT_LABELS[] = {
+            "Raptor", "Springer", "Skimmer", "Jackal",
+            "R.Beetle", "Warclaw", "Griffon", "Skyscale"
+        };
+        for (int i = 0; i < 8; i++)
+        {
+            std::string k = findKey(MOUNT_NAMES[i]);
+            if (k != "?")
+                ImGui::Text("%-10s %s", MOUNT_LABELS[i], k.c_str());
+        }
+        ImGui::Dummy(ImVec2(0, 3));
+    }
+
+    if (g_KeybindShowSquad)
+        renderCat("Squad", "Squad");
+
+    if (g_KeybindShowCamera)
+        renderCat("Camera", "Camera");
+
+    if (g_KeybindShowScreenshot)
+        renderCat("Screenshot", "Screenshot");
+
+    if (g_KeybindShowMap)
+        renderCat("Map", "Map");
+
+    if (g_KeybindShowUI)
+        renderCat("UI", "UI");
+
+    if (g_KeybindShowTemplates)
+        renderCat("Templates", "Templates");
+
+    ImGui::PopStyleVar();
+    ImGui::End();
+}
+
+// ── Keybind Config Window ───────────────────────────────────────────────
+
+static void OnKeybindConfigRender()
+{
+    SetupImGui();
+    if (!g_ShowKeybindConfig) return;
+
+    bool changed = false;
+    ImGui::SetNextWindowSizeConstraints(ImVec2(400, 0), ImVec2(600, 900));
+    if (!ImGui::Begin("Keybind Overlay Settings", &g_ShowKeybindConfig,
+                      ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ImGui::End();
+        return;
+    }
+
+    // ── Enable ───────────────────────────────────────────────────────────────
+    changed |= ImGui::Checkbox("Enable Keybind Overlay", &g_KeybindOverlayEnabled);
+
+    // ── Data Source ──────────────────────────────────────────────────────────
+    ImGui::Dummy(ImVec2(0, 6));
+    ImGui::TextUnformatted("Data Source");
+    ImGui::Separator();
+    ImGui::TextDisabled("Documents\\Guild Wars 2\\InputBinds\\");
+    ImGui::TextDisabled("Export keybinds from GW2 Settings > Controls > Export.");
+
+    {
+        const char* currentFile = (g_KeybindFileIndex >= 0 &&
+                                   g_KeybindFileIndex < static_cast<int>(g_KeybindFiles.size()))
+                                  ? g_KeybindFiles[g_KeybindFileIndex].c_str()
+                                  : "None found";
+        ImGui::Text("File: %s", currentFile);
+        ImGui::SameLine();
+        if (ImGui::Button("Browse..."))
+        {
+            OPENFILENAMEA ofn = {};
+            char filePath[MAX_PATH] = {0};
+            ofn.lStructSize = sizeof(ofn);
+            ofn.lpstrFilter = "Keybind Files\0*.xml\0All Files\0*.*\0\0";
+            ofn.lpstrFile = filePath;
+            ofn.nMaxFile = MAX_PATH;
+            ofn.lpstrTitle = "Select GW2 Keybind File";
+            ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+            if (GetOpenFileNameA(&ofn))
+            {
+                std::string path = filePath;
+                auto lastSlash = path.find_last_of("/\\");
+                std::string filename = (lastSlash != std::string::npos) ? path.substr(lastSlash + 1) : path;
+
+                bool found = false;
+                for (int i = 0; i < static_cast<int>(g_KeybindFiles.size()); i++)
+                {
+                    if (g_KeybindFiles[i] == filename)
+                    {
+                        g_KeybindFileIndex = i;
+                        LoadKeybindFile(i);
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found)
+                {
+                    std::string unixPath = WinePathToUnix(path.c_str());
+                    std::ifstream f(unixPath);
+                    if (f.is_open())
+                    {
+                        std::string xmlContent = std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+                        f.close();
+                        auto lastSlash2 = path.find_last_of("/\\");
+                        std::string filename2 = (lastSlash2 != std::string::npos) ? path.substr(lastSlash2 + 1) : path;
+                        g_KeybindFiles.clear();
+                        g_KeybindFiles.push_back(filename2);
+                        g_KeybindFileIndex = 0;
+                        g_ManualKeybindPath = path;
+                        ParseKeybindXml(xmlContent, g_Keybinds);
+                        g_KeybindsLoaded = true;
+                    }
+                }
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Reload"))
+        {
+            g_KeybindsLoaded = false;
+            LoadKeybindFile(g_KeybindFileIndex);
+        }
+    }
+
+    // ── Visibility ───────────────────────────────────────────────────────────
+    ImGui::Dummy(ImVec2(0, 6));
+    ImGui::TextUnformatted("When to Show");
+    ImGui::Separator();
+    const char* visNames[] = { "Always", "In Combat", "Out of Combat" };
+    for (int i = 0; i < 3; i++)
+    {
+        if (i > 0) ImGui::SameLine();
+        if (ImGui::RadioButton(visNames[i], g_KeybindVisibility == i))
+        {
+            g_KeybindVisibility = i;
+            changed = true;
+        }
+    }
+
+    // ── Position ─────────────────────────────────────────────────────────────
+    ImGui::Dummy(ImVec2(0, 6));
+    ImGui::TextUnformatted("Position");
+    ImGui::Separator();
+    {
+        int anchorIdx = static_cast<int>(g_KeybindPosition.anchor);
+        if (ImGui::Combo("Anchor##kb", &anchorIdx, g_AnchorNames,
+                         static_cast<int>(AnchorPoint::COUNT)))
+        {
+            g_KeybindPosition.anchor = static_cast<AnchorPoint>(anchorIdx);
+            changed = true;
+        }
+        changed |= ImGui::SliderFloat("Offset X%##kb", &g_KeybindPosition.offsetXPct,
+                                      -50.0f, 50.0f, "%.1f%%");
+        changed |= ImGui::SliderFloat("Offset Y%##kb", &g_KeybindPosition.offsetYPct,
+                                      -50.0f, 50.0f, "%.1f%%");
+        changed |= ImGui::SliderFloat("Opacity##kb", &g_KeybindOverlayOpacity, 0.1f, 1.0f, "%.2f");
+    }
+
+    // ── Sections ─────────────────────────────────────────────────────────────
+    ImGui::Dummy(ImVec2(0, 6));
+    ImGui::TextUnformatted("Sections to Display");
+    ImGui::Separator();
+    changed |= ImGui::Checkbox("Movement",   &g_KeybindShowMovement);
+    changed |= ImGui::Checkbox("Skills",     &g_KeybindShowSkills);
+    changed |= ImGui::Checkbox("Targeting",  &g_KeybindShowTargeting);
+    changed |= ImGui::Checkbox("Mounts",     &g_KeybindShowMounts);
+    changed |= ImGui::Checkbox("Squad",      &g_KeybindShowSquad);
+    changed |= ImGui::Checkbox("Camera",     &g_KeybindShowCamera);
+    changed |= ImGui::Checkbox("Screenshot", &g_KeybindShowScreenshot);
+    changed |= ImGui::Checkbox("Map",        &g_KeybindShowMap);
+    changed |= ImGui::Checkbox("UI",         &g_KeybindShowUI);
+    changed |= ImGui::Checkbox("Templates",  &g_KeybindShowTemplates);
+
+    // ── Keybind Viewer ───────────────────────────────────────────────────────
+    ImGui::Dummy(ImVec2(0, 6));
+    ImGui::Text("Loaded Keybinds (%zu)", g_Keybinds.size());
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Dump to File"))
+    {
+        const char* addonDir = g_API->Paths_GetAddonDirectory("GW2Accessibility");
+        std::string dumpPath = addonDir ? addonDir : ".\\";
+        if (dumpPath.back() != '\\' && dumpPath.back() != '/')
+            dumpPath += '\\';
+        dumpPath += "keybinds_dump.txt";
+
+        std::ofstream df(dumpPath);
+        if (df.is_open())
+        {
+            df << "GW2 Keybind Dump\n";
+            df << "================\n";
+            df << "Category       | Action                          | Bind1 (btn/mod) | Bind2 (btn/mod)\n";
+            df << "---------------|---------------------------------|-----------------|----------------\n";
+            for (const auto& kb : g_Keybinds)
+            {
+                char line[320];
+                if (!kb.key2.empty())
+                    snprintf(line, sizeof(line), "%-14s | %-31s | %-14s (%u/%u) | %s (%u/%u)\n",
+                             kb.category.c_str(), kb.name.c_str(),
+                             kb.key.c_str(), kb.rawButton, kb.rawMod,
+                             kb.key2.c_str(), kb.rawButton2, kb.rawMod2);
+                else
+                    snprintf(line, sizeof(line), "%-14s | %-31s | %-14s (%u/%u) |\n",
+                             kb.category.c_str(), kb.name.c_str(),
+                             kb.key.c_str(), kb.rawButton, kb.rawMod);
+                df << line;
+            }
+            df.close();
+            g_API->Log(LOGL_INFO, "GW2Accessibility", ("Keybind dump written to: " + dumpPath).c_str());
+        }
+    }
+    ImGui::TextDisabled("Dump writes to the GW2Accessibility addon folder.");
+    ImGui::Separator();
+    if (ImGui::BeginChild("KeybindList", ImVec2(0, 190), true))
+    {
+        static std::string s_CategoryFilter;
+        struct { const char* label; const char* cat; } kFilterBtns[] = {
+            {"All", ""},
+            {"Movement",   "Movement"},
+            {"Skills",     "Skills"},
+            {"Targeting",  "Targeting"},
+            {"Mounts",     "Mounts"},
+            {"Squad",      "Squad"},
+            {"Camera",     "Camera"},
+            {"Map",        "Map"},
+            {"UI",         "UI"},
+            {"Templates",  "Templates"},
+            {"Screenshot", "Screenshot"},
+            {"General",    "General"},
+        };
+        // Two rows of filter buttons so they don't overflow the window
+        const int ROW_BREAK = 6; // buttons per row
+        for (int fi = 0; fi < static_cast<int>(sizeof(kFilterBtns)/sizeof(kFilterBtns[0])); fi++)
+        {
+            auto& fb = kFilterBtns[fi];
+            if (fi > 0 && fi % ROW_BREAK != 0) ImGui::SameLine();
+            bool active = (s_CategoryFilter == fb.cat);
+            if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+            if (ImGui::SmallButton(fb.label)) s_CategoryFilter = fb.cat;
+            if (active) ImGui::PopStyleColor();
+        }
+        ImGui::Separator();
+
+        for (const auto& kb : g_Keybinds)
+        {
+            if (!s_CategoryFilter.empty() && kb.category != s_CategoryFilter)
+                continue;
+            if (!kb.key2.empty())
+                ImGui::Text("%-10s %-30s %s / %s  (%u / %u)",
+                            kb.category.c_str(), kb.name.c_str(),
+                            kb.key.c_str(), kb.key2.c_str(),
+                            kb.rawButton, kb.rawButton2);
+            else
+                ImGui::Text("%-10s %-30s %s  (%u)",
+                            kb.category.c_str(), kb.name.c_str(),
+                            kb.key.c_str(), kb.rawButton);
+        }
+    }
+    ImGui::EndChild();
 
     ImGui::End();
 
@@ -2035,16 +3683,6 @@ static void OnOptionsRender()
                 g_AnchorNames[static_cast<int>(g_Positions[g_ActivePosition].anchor)], x, y);
         }
 
-        // ── Crosshair ──
-        ImGui::Dummy(ImVec2(0, 4));
-        changed |= ImGui::Checkbox("Show Crosshair", &g_CrosshairEnabled);
-        if (g_CrosshairEnabled)
-        {
-            ImGui::Indent();
-            changed |= ImGui::ColorEdit4("Crosshair Color", g_CrosshairColor);
-            ImGui::Unindent();
-        }
-
         ImGui::Unindent();
         ImGui::Dummy(ImVec2(0, 4));
     }
@@ -2109,6 +3747,10 @@ static void OnOptionsRender()
         changed |= ImGui::Checkbox("Announce Food/Utility Expiry", &g_FoodUtilityExpiryEnabled);
         ImGui::TextDisabled("Speaks \"food expired\" or \"utility expired\" when a buff expires after 1+ minute.");
 
+        changed |= ImGui::Checkbox("Announce Ready Check", &g_ReadyCheckTtsEnabled);
+        ImGui::TextDisabled("Speaks \"Ready check\" when the squad leader initiates one.");
+        ImGui::TextDisabled("Requires Unofficial Extras (arcdps extension).");
+
         // ── Raid Mechanics TTS ──
         ImGui::Dummy(ImVec2(0, 4));
         ImGui::TextUnformatted("Raid Mechanic Alerts");
@@ -2144,32 +3786,61 @@ static void OnOptionsRender()
     {
         ImGui::Indent();
 
-        ImGui::TextUnformatted("Active Mechanic Icons");
+        ImGui::TextUnformatted("Crosshair");
         ImGui::Separator();
 
-        changed |= ImGui::Checkbox("Show Active Mechanic Icons", &g_IconDisplayEnabled);
-        if (g_IconDisplayEnabled)
+        changed |= ImGui::Checkbox("Show Crosshair", &g_CrosshairEnabled);
+        if (g_CrosshairEnabled)
         {
             ImGui::Indent();
-            changed |= ImGui::SliderFloat("Icon Size", &g_IconSize, 16.0f, 512.0f, "%.0f");
-            changed |= ImGui::SliderFloat("Icon Spacing", &g_IconSpacing, 0.0f, 32.0f, "%.0f");
-            changed |= ImGui::SliderFloat("Opacity", &g_IconOpacity, 0.0f, 1.0f, "%.2f");
-
-            int iconAnchorIdx = static_cast<int>(g_IconPosition.anchor);
-            if (ImGui::Combo("Icon Anchor", &iconAnchorIdx, g_AnchorNames, static_cast<int>(AnchorPoint::COUNT)))
-            {
-                g_IconPosition.anchor = static_cast<AnchorPoint>(iconAnchorIdx);
-                changed = true;
-            }
-
-            changed |= ImGui::SliderFloat("Icon Offset X %", &g_IconPosition.offsetXPct, -50.0f, 50.0f, "%.1f%%");
-            changed |= ImGui::SliderFloat("Icon Offset Y %", &g_IconPosition.offsetYPct, -50.0f, 50.0f, "%.1f%%");
-
-            ImGui::Checkbox("Show", &g_ShowTestIcon);
-            ImGui::TextDisabled("Shows a test icon to help set up position, size, and opacity.");
-
+            changed |= ImGui::ColorEdit4("Crosshair Color", g_CrosshairColor);
             ImGui::Unindent();
         }
+
+        ImGui::Dummy(ImVec2(0, 8));
+        ImGui::TextUnformatted("Keybind Overlay");
+        ImGui::Separator();
+
+        changed |= ImGui::Checkbox("Show Keybind Overlay", &g_KeybindOverlayEnabled);
+        if (g_KeybindOverlayEnabled)
+        {
+            ImGui::Indent();
+            const char* visNames[] = { "Always", "In Combat Only", "Out of Combat Only" };
+            changed |= ImGui::Combo("Visibility", &g_KeybindVisibility, visNames, 3);
+            ImGui::Unindent();
+        }
+        if (ImGui::Button("Configure Keybinds..."))
+            g_ShowKeybindConfig = true;
+        ImGui::TextDisabled("Select an exported keybind file from Documents\\Guild Wars 2\\InputBinds\\");
+
+        ImGui::Dummy(ImVec2(0, 8));
+        ImGui::TextDisabled("For more visual accessibility features install");
+        ImGui::TextDisabled("Reffect from the link below.");
+        ImGui::Dummy(ImVec2(0, 4));
+        if (ImGui::Button("Open Reffect on GitHub"))
+        {
+            ShellExecuteA(nullptr, "open", "https://github.com/Zerthox/gw2-reffect", nullptr, nullptr, SW_SHOWNORMAL);
+        }
+        ImGui::TextDisabled("Then configure visual accessibility features in the");
+        ImGui::TextDisabled("GW2Accessibility pack in Reffect settings.");
+
+        ImGui::Dummy(ImVec2(0, 8));
+        ImGui::Separator();
+        ImGui::Dummy(ImVec2(0, 4));
+        if (ImGui::Button("Deploy Accessibility Pack to Reffect"))
+        {
+            std::string dir = GetReffectPacksDir();
+            if (!dir.empty())
+            {
+                std::filesystem::create_directories(dir);
+                std::string filepath = dir + "GW2Accessibility.json";
+                if (std::filesystem::exists(filepath))
+                    std::filesystem::remove(filepath);
+                DeployReffectPack();
+                g_API->Log(LOGL_INFO, "GW2Accessibility", "[REFFECT] Accessibility pack deployed.");
+            }
+        }
+        ImGui::TextDisabled("Writes GW2Accessibility.json to the Reffect packs folder.");
 
         ImGui::Unindent();
         ImGui::Dummy(ImVec2(0, 4));
@@ -2190,11 +3861,63 @@ static void OnOptionsRender()
 
 // ── Addon Lifecycle ──────────────────────────────────────────────────────────
 
+// ── Unofficial Extras — Ready Check Detection ──────────────────────────────
+
+static void OnSquadUpdate(const UnofficialExtras::UserInfo* pUsers, uint64_t pCount)
+{
+    using UnofficialExtras::UserRole;
+
+    for (uint64_t i = 0; i < pCount; i++)
+    {
+        const UnofficialExtras::UserInfo& u = pUsers[i];
+        if (!u.AccountName) continue;
+
+        std::string account = u.AccountName;
+
+        bool prevReady = false;
+        auto it = g_SquadReadyStatus.find(account);
+        if (it != g_SquadReadyStatus.end())
+            prevReady = it->second;
+
+        // Squad leader transitions from not-ready to ready = ready check initiated
+        if (u.Role == UserRole::SquadLeader && !prevReady && u.ReadyStatus)
+        {
+            if (g_ReadyCheckTtsEnabled)
+            {
+                InitSAPI();
+                if (g_TtsReady)
+                    SpeakText(L"Ready Check Initiated.");
+            }
+        }
+
+        // Role::None means the user left the squad — remove from cache
+        if (u.Role == UserRole::None)
+            g_SquadReadyStatus.erase(account);
+        else
+            g_SquadReadyStatus[account] = u.ReadyStatus;
+    }
+}
+
+extern "C" __declspec(dllexport) void arcdps_unofficial_extras_subscriber_init(
+    const UnofficialExtras::ExtrasAddonInfo* pExtrasInfo, void* pSubscriberInfo)
+{
+    if (!pExtrasInfo || pExtrasInfo->ApiVersion != 2) return;
+
+    auto* info = static_cast<UnofficialExtras::ExtrasSubscriberInfoV1*>(pSubscriberInfo);
+    info->InfoVersion            = 1;
+    info->SubscriberName         = "GW2Accessibility";
+    info->SquadUpdateCallback    = OnSquadUpdate;
+    info->LanguageChangedCallback = nullptr;
+    info->KeyBindChangedCallback  = nullptr;
+}
+
 void AddonLoad(AddonAPI_t* aAPI)
 {
     g_API = aAPI;
+    g_IsWine = DetectWine();
     LoadSettings();
     InitMumble();
+    DeployReffectPack();
 
     g_API->InputBinds_RegisterWithString(
         "GW2ACCESSIBILITY_MOUSE_TOGGLE",
@@ -2204,6 +3927,9 @@ void AddonLoad(AddonAPI_t* aAPI)
     g_API->GUI_Register(RT_Render, OnRender);
     g_API->GUI_Register(RT_OptionsRender, OnOptionsRender);
     g_API->GUI_Register(RT_Render, OnMechanicsWindowRender);
+    g_API->GUI_Register(RT_Render, OnEffectManagerRender);
+    g_API->GUI_Register(RT_Render, OnKeybindOverlayRender);
+    g_API->GUI_Register(RT_Render, OnKeybindConfigRender);
     g_API->Events_Subscribe(GW2_CHAT_EVENT, OnChatMessage);
     g_API->Events_Subscribe(EV_ARCDPS_COMBAT_SQUAD, OnCombatEvent);
     g_API->Events_Subscribe(EV_ARCDPS_COMBAT_LOCAL, OnCombatEvent);
@@ -2224,6 +3950,9 @@ void AddonUnload()
         g_API->GUI_Deregister(OnRender);
         g_API->GUI_Deregister(OnOptionsRender);
         g_API->GUI_Deregister(OnMechanicsWindowRender);
+        g_API->GUI_Deregister(OnEffectManagerRender);
+        g_API->GUI_Deregister(OnKeybindOverlayRender);
+        g_API->GUI_Deregister(OnKeybindConfigRender);
         g_API->Events_Unsubscribe(GW2_CHAT_EVENT, OnChatMessage);
         g_API->Events_Unsubscribe(EV_ARCDPS_COMBAT_SQUAD, OnCombatEvent);
         g_API->Events_Unsubscribe(EV_ARCDPS_COMBAT_LOCAL, OnCombatEvent);
@@ -2254,7 +3983,7 @@ void AddonUnload()
 
 extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef()
 {
-    static AddonVersion_t s_Version = { 0, 1, 2, 0 };
+    static AddonVersion_t s_Version = { 0, 2, 0, 0 };
 
     static AddonDefinition_t s_Def = {};
     s_Def.Signature  = -2;

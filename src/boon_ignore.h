@@ -7,26 +7,26 @@
 // This is the inverse approach: whitelist conditions instead of blacklisting boons
 // (far fewer conditions than boons, much safer)
 static const std::unordered_set<unsigned int> g_ConditionIds = {
-    // Core conditions
+    // Core conditions — verified effect IDs
     736,  // Bleeding
     737,  // Burning
     861,  // Confusion
-    723,  // Poison
+    723,  // Poisoned
     19426,// Torment
-    720,  // Blind
+    720,  // Blinded
     722,  // Chilled
     721,  // Crippled
-    727,  // Immobile
+    727,  // Immobilized
     742,  // Weakness
     738,  // Vulnerability
     26766,// Slow
-    // Control effects
     791,  // Fear
+    27705,// Taunt
+    // Control effects
     872,  // Stun
     833,  // Daze
-    27705,// Taunt
     26646,// Battle Scars
-    // Special conditions
+    // Special conditions (API skill IDs)
     890,  // Revealed
     47414,// Necrosis
     34473,// Corruption

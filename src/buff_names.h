@@ -10,13 +10,14 @@ static const std::unordered_map<unsigned int, const char*> g_BuiltinBuffNames = 
     {718, "Regeneration"}, {17674, "Regeneration"}, {719, "Swiftness"},
     {726, "Vigor"}, {743, "Aegis"}, {17675, "Aegis"}, {1122, "Stability"},
     {873, "Retaliation"}, {26980, "Resistance"},
-    // Conditions
+    // Conditions — verified effect IDs
     {736, "Bleeding"}, {737, "Burning"}, {861, "Confusion"},
-    {723, "Poison"}, {19426, "Torment"}, {720, "Blind"},
-    {722, "Chilled"}, {721, "Crippled"}, {727, "Immobile"},
+    {723, "Poisoned"}, {19426, "Torment"}, {720, "Blinded"},
+    {722, "Chilled"}, {721, "Crippled"}, {727, "Immobilized"},
     {742, "Weakness"}, {738, "Vulnerability"}, {26766, "Slow"},
-    // Control effects (also used as debuff IDs in combat events)
-    {791, "Fear"}, {872, "Stun"}, {833, "Daze"}, {27705, "Taunt"},
+    {791, "Fear"}, {27705, "Taunt"},
+    // Control effects
+    {872, "Stun"}, {833, "Daze"},
     {26646, "Battle Scars"},
     // Common effects
     {762, "Determined"}, {895, "Determined"}, {11641, "Determined"},
