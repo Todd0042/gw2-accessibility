@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(sqlite3 /home/todd/.local/share/opencode/opencode.db \"SELECT data FROM message WHERE session_id='ses_1dbee038fffeXHvQqvAGoces9N' AND json_extract\\(data,'$.role'\\)='user' ORDER BY time_created LIMIT 3;\")",
+      "Bash(python3 -c \"import sys,json; [print\\(json.dumps\\(json.loads\\(l\\), indent=2\\)[:1000]\\) for l in sys.stdin]\")",
+      "Bash(sqlite3 /home/todd/.local/share/opencode/opencode.db \"SELECT json_extract\\(data,'$.summary.diffs[0].patch'\\) FROM message WHERE session_id='ses_1dbee038fffeXHvQqvAGoces9N' AND json_extract\\(data,'$.role'\\)='user' AND json_extract\\(data,'$.summary.diffs[0].file'\\)='src/addon.cpp' ORDER BY time_created LIMIT 5;\")",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)"
+    ],
+    "additionalDirectories": [
+      "/home/todd/Documents/gw2-Lessons-Learned"
+    ]
+  }
+}

@@ -9,6 +9,7 @@
 #include <imgui.h>
 #include <windows.h>
 #include <shellapi.h>
+#include <shlobj.h>
 #include <commdlg.h>
 #include <sapi.h>
 #include <nlohmann/json.hpp>
@@ -1325,6 +1326,50 @@ static void ScanKeybindFiles()
                     g_API->Log(LOGL_INFO, "GW2Accessibility", dbg);
                     return;
                 }
+            }
+        }
+    }
+
+    // On native Windows, try SHGetKnownFolderPath(FOLDERID_Documents) before the Nexus
+    // common-directory fallback. This API resolves the real Documents folder even when
+    // OneDrive folder redirection moves it to %USERPROFILE%\OneDrive\Documents\.
+    if (!g_IsWine)
+    {
+        PWSTR pszPath = nullptr;
+        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents, KF_FLAG_DEFAULT, nullptr, &pszPath)))
+        {
+            char narrowPath[MAX_PATH] = {};
+            WideCharToMultiByte(CP_ACP, 0, pszPath, -1, narrowPath, sizeof(narrowPath), nullptr, nullptr);
+            CoTaskMemFree(pszPath);
+
+            std::string basePath = narrowPath;
+            if (!basePath.empty() && basePath.back() != '\\')
+                basePath += '\\';
+            basePath += "Guild Wars 2\\InputBinds\\";
+
+            snprintf(dbg, sizeof(dbg), "[KEYBINDS] Trying FOLDERID_Documents path: %s", basePath.c_str());
+            g_API->Log(LOGL_INFO, "GW2Accessibility", dbg);
+
+            if (std::filesystem::exists(basePath))
+            {
+                for (const auto& entry : std::filesystem::directory_iterator(basePath))
+                {
+                    if (entry.is_regular_file() && entry.path().extension() == ".xml")
+                        g_KeybindFiles.push_back(entry.path().filename().string());
+                }
+                if (!g_KeybindFiles.empty())
+                {
+                    g_KeybindFileIndex = 0;
+                    g_KeybindBaseDir = basePath;
+                    snprintf(dbg, sizeof(dbg), "[KEYBINDS] Found %zu files via FOLDERID_Documents", g_KeybindFiles.size());
+                    g_API->Log(LOGL_INFO, "GW2Accessibility", dbg);
+                    return;
+                }
+            }
+            else
+            {
+                snprintf(dbg, sizeof(dbg), "[KEYBINDS] FOLDERID_Documents path does not exist: %s", basePath.c_str());
+                g_API->Log(LOGL_INFO, "GW2Accessibility", dbg);
             }
         }
     }

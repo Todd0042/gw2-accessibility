@@ -1,0 +1,1639 @@
+{
+  "schema": "v1",
+  "enabled": true,
+  "name": "Buffs",
+  "anchor": {
+    "Screen": "Center"
+  },
+  "pos": [
+    0.0,
+    0.0
+  ],
+  "opacity": 1.0,
+  "trigger": {
+    "source": {
+      "type": "Inherit"
+    },
+    "threshold": {
+      "threshold_type": "Always",
+      "amount_type": "Intensity"
+    }
+  },
+  "filter": {
+    "player": {
+      "combat": null,
+      "weapons": [],
+      "weapon_mode": "Any",
+      "sigils": [],
+      "sigil_mode": "Any",
+      "relics": [],
+      "traits": [],
+      "trait_mode": "All",
+      "specs": [],
+      "skill_selections": [],
+      "skill_selections_mode": "All",
+      "prof_selections": [],
+      "mounts": []
+    },
+    "map": {
+      "category": [
+        "PvE",
+        "Instance",
+        "Other"
+      ],
+      "whitelist": true,
+      "ids": []
+    }
+  },
+  "animation": null,
+  "layer": 0,
+  "elements": [
+    {
+      "enabled": true,
+      "name": "Boons",
+      "anchor": "Parent",
+      "pos": [
+        -381.0,
+        -178.0
+      ],
+      "opacity": 1.0,
+      "trigger": {
+        "source": {
+          "type": "Inherit"
+        },
+        "threshold": {
+          "threshold_type": "Always",
+          "amount_type": "Intensity"
+        }
+      },
+      "filter": {
+        "player": {
+          "combat": null,
+          "weapons": [],
+          "weapon_mode": "Any",
+          "sigils": [],
+          "sigil_mode": "Any",
+          "relics": [],
+          "traits": [],
+          "trait_mode": "All",
+          "specs": [],
+          "skill_selections": [],
+          "skill_selections_mode": "All",
+          "prof_selections": [],
+          "mounts": []
+        },
+        "map": {
+          "category": [],
+          "whitelist": true,
+          "ids": []
+        }
+      },
+      "animation": null,
+      "type": "Group",
+      "members": [
+        {
+          "enabled": true,
+          "name": "Background",
+          "anchor": "Parent",
+          "pos": [
+            174.0,
+            616.0
+          ],
+          "opacity": 1.0,
+          "trigger": {
+            "source": {
+              "type": "Inherit"
+            },
+            "threshold": {
+              "threshold_type": "Always",
+              "amount_type": "Intensity"
+            }
+          },
+          "filter": {
+            "player": {
+              "combat": null,
+              "weapons": [],
+              "weapon_mode": "Any",
+              "sigils": [],
+              "sigil_mode": "Any",
+              "relics": [],
+              "traits": [],
+              "trait_mode": "All",
+              "specs": [],
+              "skill_selections": [],
+              "skill_selections_mode": "All",
+              "prof_selections": [],
+              "mounts": []
+            },
+            "map": {
+              "category": [],
+              "whitelist": true,
+              "ids": []
+            }
+          },
+          "animation": null,
+          "type": "Bar",
+          "progress_kind": "Duration",
+          "max": 25.0,
+          "lower_bound": 0.0,
+          "upper_bound": 1.0,
+          "fill": [
+            9.9999e-7,
+            0.000001,
+            9.9999e-7,
+            0.9378531
+          ],
+          "background": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "border_size": 1.0,
+          "border_color": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "tick_size": 1.0,
+          "tick_color": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "conditions": [],
+          "size": [
+            260.0,
+            45.0
+          ],
+          "align": "Center",
+          "direction": "Right",
+          "tick_unit": "Percent",
+          "ticks": []
+        },
+        {
+          "enabled": true,
+          "name": "Quickness",
+          "anchor": "Parent",
+          "pos": [
+            69.0,
+            615.0
+          ],
+          "opacity": 1.0,
+          "trigger": {
+            "source": {
+              "type": "Buff",
+              "combatant": "Player",
+              "ids": [
+                1187
+              ]
+            },
+            "threshold": {
+              "threshold_type": "Present",
+              "amount_type": "Intensity"
+            }
+          },
+          "filter": {
+            "player": {
+              "combat": null,
+              "weapons": [],
+              "weapon_mode": "Any",
+              "sigils": [],
+              "sigil_mode": "Any",
+              "relics": [],
+              "traits": [],
+              "trait_mode": "All",
+              "specs": [],
+              "skill_selections": [],
+              "skill_selections_mode": "All",
+              "prof_selections": [],
+              "mounts": []
+            },
+            "map": {
+              "category": [],
+              "whitelist": true,
+              "ids": []
+            }
+          },
+          "animation": null,
+          "type": "Icon",
+          "icon": "Automatic",
+          "tint": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "zoom": 1.0,
+          "round": 0.0,
+          "border_size": 0.0,
+          "border_color": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "conditions": [],
+          "duration_bar": true,
+          "duration_text": true,
+          "stacks_text": false,
+          "size": [
+            42.0,
+            42.0
+          ]
+        },
+        {
+          "enabled": true,
+          "name": "Might",
+          "anchor": "Parent",
+          "pos": [
+            153.0,
+            615.0
+          ],
+          "opacity": 1.0,
+          "trigger": {
+            "source": {
+              "type": "Buff",
+              "combatant": "Player",
+              "ids": [
+                740
+              ]
+            },
+            "threshold": {
+              "threshold_type": "Present",
+              "amount_type": "Intensity"
+            }
+          },
+          "filter": {
+            "player": {
+              "combat": null,
+              "weapons": [],
+              "weapon_mode": "Any",
+              "sigils": [],
+              "sigil_mode": "Any",
+              "relics": [],
+              "traits": [],
+              "trait_mode": "All",
+              "specs": [],
+              "skill_selections": [],
+              "skill_selections_mode": "All",
+              "prof_selections": [],
+              "mounts": []
+            },
+            "map": {
+              "category": [],
+              "whitelist": true,
+              "ids": []
+            }
+          },
+          "animation": null,
+          "type": "Icon",
+          "icon": "Automatic",
+          "tint": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "zoom": 1.0,
+          "round": 0.0,
+          "border_size": 0.0,
+          "border_color": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "conditions": [],
+          "duration_bar": true,
+          "duration_text": true,
+          "stacks_text": true,
+          "size": [
+            42.0,
+            42.0
+          ]
+        },
+        {
+          "enabled": true,
+          "name": "Alacritty",
+          "anchor": "Parent",
+          "pos": [
+            111.0,
+            615.0
+          ],
+          "opacity": 1.0,
+          "trigger": {
+            "source": {
+              "type": "Buff",
+              "combatant": "Player",
+              "ids": [
+                30328
+              ]
+            },
+            "threshold": {
+              "threshold_type": "Present",
+              "amount_type": "Intensity"
+            }
+          },
+          "filter": {
+            "player": {
+              "combat": null,
+              "weapons": [],
+              "weapon_mode": "Any",
+              "sigils": [],
+              "sigil_mode": "Any",
+              "relics": [],
+              "traits": [],
+              "trait_mode": "All",
+              "specs": [],
+              "skill_selections": [],
+              "skill_selections_mode": "All",
+              "prof_selections": [],
+              "mounts": []
+            },
+            "map": {
+              "category": [],
+              "whitelist": true,
+              "ids": []
+            }
+          },
+          "animation": null,
+          "type": "Icon",
+          "icon": "Automatic",
+          "tint": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "zoom": 1.0,
+          "round": 0.0,
+          "border_size": 0.0,
+          "border_color": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "conditions": [],
+          "duration_bar": true,
+          "duration_text": true,
+          "stacks_text": false,
+          "size": [
+            42.0,
+            42.0
+          ]
+        },
+        {
+          "enabled": true,
+          "name": "Fury",
+          "anchor": "Parent",
+          "pos": [
+            195.0,
+            615.0
+          ],
+          "opacity": 1.0,
+          "trigger": {
+            "source": {
+              "type": "Buff",
+              "combatant": "Player",
+              "ids": [
+                725
+              ]
+            },
+            "threshold": {
+              "threshold_type": "Present",
+              "amount_type": "Intensity"
+            }
+          },
+          "filter": {
+            "player": {
+              "combat": null,
+              "weapons": [],
+              "weapon_mode": "Any",
+              "sigils": [],
+              "sigil_mode": "Any",
+              "relics": [],
+              "traits": [],
+              "trait_mode": "All",
+              "specs": [],
+              "skill_selections": [],
+              "skill_selections_mode": "All",
+              "prof_selections": [],
+              "mounts": []
+            },
+            "map": {
+              "category": [],
+              "whitelist": true,
+              "ids": []
+            }
+          },
+          "animation": null,
+          "type": "Icon",
+          "icon": "Automatic",
+          "tint": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "zoom": 1.0,
+          "round": 0.0,
+          "border_size": 0.0,
+          "border_color": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "conditions": [],
+          "duration_bar": true,
+          "duration_text": true,
+          "stacks_text": false,
+          "size": [
+            42.0,
+            42.0
+          ]
+        },
+        {
+          "enabled": true,
+          "name": "Stability",
+          "anchor": "Parent",
+          "pos": [
+            279.0,
+            615.0
+          ],
+          "opacity": 1.0,
+          "trigger": {
+            "source": {
+              "type": "Buff",
+              "combatant": "Player",
+              "ids": [
+                1122
+              ]
+            },
+            "threshold": {
+              "threshold_type": "Present",
+              "amount_type": "Intensity"
+            }
+          },
+          "filter": {
+            "player": {
+              "combat": null,
+              "weapons": [],
+              "weapon_mode": "Any",
+              "sigils": [],
+              "sigil_mode": "Any",
+              "relics": [],
+              "traits": [],
+              "trait_mode": "All",
+              "specs": [],
+              "skill_selections": [],
+              "skill_selections_mode": "All",
+              "prof_selections": [],
+              "mounts": []
+            },
+            "map": {
+              "category": [],
+              "whitelist": true,
+              "ids": []
+            }
+          },
+          "animation": null,
+          "type": "Icon",
+          "icon": "Automatic",
+          "tint": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "zoom": 1.0,
+          "round": 0.0,
+          "border_size": 0.0,
+          "border_color": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "conditions": [],
+          "duration_bar": true,
+          "duration_text": true,
+          "stacks_text": true,
+          "size": [
+            42.0,
+            42.0
+          ]
+        },
+        {
+          "enabled": true,
+          "name": "Aegis",
+          "anchor": "Parent",
+          "pos": [
+            237.0,
+            615.0
+          ],
+          "opacity": 1.0,
+          "trigger": {
+            "source": {
+              "type": "Buff",
+              "combatant": "Player",
+              "ids": [
+                743
+              ]
+            },
+            "threshold": {
+              "threshold_type": "Present",
+              "amount_type": "Intensity"
+            }
+          },
+          "filter": {
+            "player": {
+              "combat": null,
+              "weapons": [],
+              "weapon_mode": "Any",
+              "sigils": [],
+              "sigil_mode": "Any",
+              "relics": [],
+              "traits": [],
+              "trait_mode": "All",
+              "specs": [],
+              "skill_selections": [],
+              "skill_selections_mode": "All",
+              "prof_selections": [],
+              "mounts": []
+            },
+            "map": {
+              "category": [],
+              "whitelist": true,
+              "ids": []
+            }
+          },
+          "animation": null,
+          "type": "Icon",
+          "icon": "Automatic",
+          "tint": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "zoom": 1.0,
+          "round": 0.0,
+          "border_size": 0.0,
+          "border_color": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "conditions": [],
+          "duration_bar": true,
+          "duration_text": true,
+          "stacks_text": false,
+          "size": [
+            42.0,
+            42.0
+          ]
+        }
+      ]
+    },
+    {
+      "enabled": true,
+      "name": "Raid Debuff",
+      "anchor": "Parent",
+      "pos": [
+        -370.0,
+        -508.0
+      ],
+      "opacity": 1.0,
+      "trigger": {
+        "source": {
+          "type": "Inherit"
+        },
+        "threshold": {
+          "threshold_type": "Always",
+          "amount_type": "Intensity"
+        }
+      },
+      "filter": {
+        "player": {
+          "combat": null,
+          "weapons": [],
+          "weapon_mode": "Any",
+          "sigils": [],
+          "sigil_mode": "Any",
+          "relics": [],
+          "traits": [],
+          "trait_mode": "All",
+          "specs": [],
+          "skill_selections": [],
+          "skill_selections_mode": "All",
+          "prof_selections": [],
+          "mounts": []
+        },
+        "map": {
+          "category": [],
+          "whitelist": true,
+          "ids": []
+        }
+      },
+      "animation": null,
+      "type": "Group",
+      "members": [
+        {
+          "enabled": true,
+          "name": "Background",
+          "anchor": "Parent",
+          "pos": [
+            76.0,
+            622.0
+          ],
+          "opacity": 1.0,
+          "trigger": {
+            "source": {
+              "type": "Buff",
+              "combatant": "Player",
+              "ids": [
+                47414
+              ]
+            },
+            "threshold": {
+              "threshold_type": "Present",
+              "amount_type": "Intensity"
+            }
+          },
+          "filter": {
+            "player": {
+              "combat": null,
+              "weapons": [],
+              "weapon_mode": "Any",
+              "sigils": [],
+              "sigil_mode": "Any",
+              "relics": [],
+              "traits": [],
+              "trait_mode": "All",
+              "specs": [],
+              "skill_selections": [],
+              "skill_selections_mode": "All",
+              "prof_selections": [],
+              "mounts": []
+            },
+            "map": {
+              "category": [],
+              "whitelist": true,
+              "ids": []
+            }
+          },
+          "animation": null,
+          "type": "Bar",
+          "progress_kind": "Intensity",
+          "max": 25.0,
+          "lower_bound": 0.0,
+          "upper_bound": 0.01,
+          "fill": [
+            9.9999e-7,
+            0.000001,
+            9.9999e-7,
+            0.9378531
+          ],
+          "background": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "border_size": 1.0,
+          "border_color": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "tick_size": 1.0,
+          "tick_color": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "conditions": [],
+          "size": [
+            150.0,
+            150.0
+          ],
+          "align": "Center",
+          "direction": "Up",
+          "tick_unit": "Percent",
+          "ticks": []
+        },
+        {
+          "enabled": true,
+          "name": "Deuff",
+          "anchor": "Parent",
+          "pos": [
+            76.0,
+            621.0
+          ],
+          "opacity": 1.0,
+          "trigger": {
+            "source": {
+              "type": "Buff",
+              "combatant": "Player",
+              "ids": [
+                34387,
+                38049,
+                34450,
+                79513,
+                47414,
+                48042,
+                34416,
+                34450,
+                47646,
+                34508,
+                79526
+              ]
+            },
+            "threshold": {
+              "threshold_type": "Present",
+              "amount_type": "Intensity"
+            }
+          },
+          "filter": {
+            "player": {
+              "combat": null,
+              "weapons": [],
+              "weapon_mode": "Any",
+              "sigils": [],
+              "sigil_mode": "Any",
+              "relics": [],
+              "traits": [],
+              "trait_mode": "All",
+              "specs": [],
+              "skill_selections": [],
+              "skill_selections_mode": "All",
+              "prof_selections": [],
+              "mounts": []
+            },
+            "map": {
+              "category": [],
+              "whitelist": true,
+              "ids": []
+            }
+          },
+          "animation": null,
+          "type": "Icon",
+          "icon": "Automatic",
+          "tint": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "zoom": 1.0,
+          "round": 0.0,
+          "border_size": 0.0,
+          "border_color": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "conditions": [],
+          "duration_bar": true,
+          "duration_text": true,
+          "stacks_text": true,
+          "size": [
+            145.0,
+            145.0
+          ]
+        }
+      ]
+    },
+    {
+      "enabled": true,
+      "name": "Condis",
+      "anchor": "Parent",
+      "pos": [
+        9.0,
+        -178.0
+      ],
+      "opacity": 1.0,
+      "trigger": {
+        "source": {
+          "type": "Inherit"
+        },
+        "threshold": {
+          "threshold_type": "Always",
+          "amount_type": "Intensity"
+        }
+      },
+      "filter": {
+        "player": {
+          "combat": null,
+          "weapons": [],
+          "weapon_mode": "Any",
+          "sigils": [],
+          "sigil_mode": "Any",
+          "relics": [],
+          "traits": [],
+          "trait_mode": "All",
+          "specs": [],
+          "skill_selections": [],
+          "skill_selections_mode": "All",
+          "prof_selections": [],
+          "mounts": []
+        },
+        "map": {
+          "category": [],
+          "whitelist": true,
+          "ids": []
+        }
+      },
+      "animation": null,
+      "type": "Group",
+      "members": [
+        {
+          "enabled": true,
+          "name": "Background",
+          "anchor": "Parent",
+          "pos": [
+            173.0,
+            614.0
+          ],
+          "opacity": 1.0,
+          "trigger": {
+            "source": {
+              "type": "Inherit"
+            },
+            "threshold": {
+              "threshold_type": "Always",
+              "amount_type": "Intensity"
+            }
+          },
+          "filter": {
+            "player": {
+              "combat": null,
+              "weapons": [],
+              "weapon_mode": "Any",
+              "sigils": [],
+              "sigil_mode": "Any",
+              "relics": [],
+              "traits": [],
+              "trait_mode": "All",
+              "specs": [],
+              "skill_selections": [],
+              "skill_selections_mode": "All",
+              "prof_selections": [],
+              "mounts": []
+            },
+            "map": {
+              "category": [],
+              "whitelist": true,
+              "ids": []
+            }
+          },
+          "animation": null,
+          "type": "Bar",
+          "progress_kind": "Duration",
+          "max": 25.0,
+          "lower_bound": 0.0,
+          "upper_bound": 1.0,
+          "fill": [
+            9.9999e-7,
+            0.000001,
+            9.9999e-7,
+            0.9378531
+          ],
+          "background": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "border_size": 1.0,
+          "border_color": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "tick_size": 1.0,
+          "tick_color": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "conditions": [],
+          "size": [
+            260.0,
+            45.0
+          ],
+          "align": "Center",
+          "direction": "Right",
+          "tick_unit": "Percent",
+          "ticks": []
+        },
+        {
+          "enabled": true,
+          "name": "Bleeding",
+          "anchor": "Parent",
+          "pos": [
+            69.0,
+            615.0
+          ],
+          "opacity": 1.0,
+          "trigger": {
+            "source": {
+              "type": "Buff",
+              "combatant": "Player",
+              "ids": [
+                736
+              ]
+            },
+            "threshold": {
+              "threshold_type": "Present",
+              "amount_type": "Intensity"
+            }
+          },
+          "filter": {
+            "player": {
+              "combat": null,
+              "weapons": [],
+              "weapon_mode": "Any",
+              "sigils": [],
+              "sigil_mode": "Any",
+              "relics": [],
+              "traits": [],
+              "trait_mode": "All",
+              "specs": [],
+              "skill_selections": [],
+              "skill_selections_mode": "All",
+              "prof_selections": [],
+              "mounts": []
+            },
+            "map": {
+              "category": [],
+              "whitelist": true,
+              "ids": []
+            }
+          },
+          "animation": null,
+          "type": "Icon",
+          "icon": "Automatic",
+          "tint": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "zoom": 1.0,
+          "round": 0.0,
+          "border_size": 0.0,
+          "border_color": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "conditions": [],
+          "duration_bar": true,
+          "duration_text": true,
+          "stacks_text": false,
+          "size": [
+            42.0,
+            42.0
+          ]
+        },
+        {
+          "enabled": true,
+          "name": "Poison",
+          "anchor": "Parent",
+          "pos": [
+            153.0,
+            615.0
+          ],
+          "opacity": 1.0,
+          "trigger": {
+            "source": {
+              "type": "Buff",
+              "combatant": "Player",
+              "ids": [
+                723
+              ]
+            },
+            "threshold": {
+              "threshold_type": "Present",
+              "amount_type": "Intensity"
+            }
+          },
+          "filter": {
+            "player": {
+              "combat": null,
+              "weapons": [],
+              "weapon_mode": "Any",
+              "sigils": [],
+              "sigil_mode": "Any",
+              "relics": [],
+              "traits": [],
+              "trait_mode": "All",
+              "specs": [],
+              "skill_selections": [],
+              "skill_selections_mode": "All",
+              "prof_selections": [],
+              "mounts": []
+            },
+            "map": {
+              "category": [],
+              "whitelist": true,
+              "ids": []
+            }
+          },
+          "animation": null,
+          "type": "Icon",
+          "icon": "Automatic",
+          "tint": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "zoom": 1.0,
+          "round": 0.0,
+          "border_size": 0.0,
+          "border_color": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "conditions": [],
+          "duration_bar": true,
+          "duration_text": true,
+          "stacks_text": true,
+          "size": [
+            42.0,
+            42.0
+          ]
+        },
+        {
+          "enabled": true,
+          "name": "Burning",
+          "anchor": "Parent",
+          "pos": [
+            111.0,
+            615.0
+          ],
+          "opacity": 1.0,
+          "trigger": {
+            "source": {
+              "type": "Buff",
+              "combatant": "Player",
+              "ids": [
+                737
+              ]
+            },
+            "threshold": {
+              "threshold_type": "Present",
+              "amount_type": "Intensity"
+            }
+          },
+          "filter": {
+            "player": {
+              "combat": null,
+              "weapons": [],
+              "weapon_mode": "Any",
+              "sigils": [],
+              "sigil_mode": "Any",
+              "relics": [],
+              "traits": [],
+              "trait_mode": "All",
+              "specs": [],
+              "skill_selections": [],
+              "skill_selections_mode": "All",
+              "prof_selections": [],
+              "mounts": []
+            },
+            "map": {
+              "category": [],
+              "whitelist": true,
+              "ids": []
+            }
+          },
+          "animation": null,
+          "type": "Icon",
+          "icon": "Automatic",
+          "tint": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "zoom": 1.0,
+          "round": 0.0,
+          "border_size": 0.0,
+          "border_color": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "conditions": [],
+          "duration_bar": true,
+          "duration_text": true,
+          "stacks_text": false,
+          "size": [
+            42.0,
+            42.0
+          ]
+        },
+        {
+          "enabled": true,
+          "name": "Torment",
+          "anchor": "Parent",
+          "pos": [
+            195.0,
+            615.0
+          ],
+          "opacity": 1.0,
+          "trigger": {
+            "source": {
+              "type": "Buff",
+              "combatant": "Player",
+              "ids": [
+                19426
+              ]
+            },
+            "threshold": {
+              "threshold_type": "Present",
+              "amount_type": "Intensity"
+            }
+          },
+          "filter": {
+            "player": {
+              "combat": null,
+              "weapons": [],
+              "weapon_mode": "Any",
+              "sigils": [],
+              "sigil_mode": "Any",
+              "relics": [],
+              "traits": [],
+              "trait_mode": "All",
+              "specs": [],
+              "skill_selections": [],
+              "skill_selections_mode": "All",
+              "prof_selections": [],
+              "mounts": []
+            },
+            "map": {
+              "category": [],
+              "whitelist": true,
+              "ids": []
+            }
+          },
+          "animation": null,
+          "type": "Icon",
+          "icon": "Automatic",
+          "tint": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "zoom": 1.0,
+          "round": 0.0,
+          "border_size": 0.0,
+          "border_color": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "conditions": [],
+          "duration_bar": true,
+          "duration_text": true,
+          "stacks_text": false,
+          "size": [
+            42.0,
+            42.0
+          ]
+        },
+        {
+          "enabled": true,
+          "name": "Agony",
+          "anchor": "Parent",
+          "pos": [
+            279.0,
+            615.0
+          ],
+          "opacity": 1.0,
+          "trigger": {
+            "source": {
+              "type": "Buff",
+              "combatant": "Player",
+              "ids": [
+                722
+              ]
+            },
+            "threshold": {
+              "threshold_type": "Present",
+              "amount_type": "Intensity"
+            }
+          },
+          "filter": {
+            "player": {
+              "combat": null,
+              "weapons": [],
+              "weapon_mode": "Any",
+              "sigils": [],
+              "sigil_mode": "Any",
+              "relics": [],
+              "traits": [],
+              "trait_mode": "All",
+              "specs": [],
+              "skill_selections": [],
+              "skill_selections_mode": "All",
+              "prof_selections": [],
+              "mounts": []
+            },
+            "map": {
+              "category": [],
+              "whitelist": true,
+              "ids": []
+            }
+          },
+          "animation": null,
+          "type": "Icon",
+          "icon": "Automatic",
+          "tint": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "zoom": 1.0,
+          "round": 0.0,
+          "border_size": 0.0,
+          "border_color": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "conditions": [],
+          "duration_bar": true,
+          "duration_text": true,
+          "stacks_text": true,
+          "size": [
+            42.0,
+            42.0
+          ]
+        },
+        {
+          "enabled": true,
+          "name": "Agony",
+          "anchor": "Parent",
+          "pos": [
+            237.0,
+            615.0
+          ],
+          "opacity": 1.0,
+          "trigger": {
+            "source": {
+              "type": "Buff",
+              "combatant": "Player",
+              "ids": [
+                15773
+              ]
+            },
+            "threshold": {
+              "threshold_type": "Present",
+              "amount_type": "Intensity"
+            }
+          },
+          "filter": {
+            "player": {
+              "combat": null,
+              "weapons": [],
+              "weapon_mode": "Any",
+              "sigils": [],
+              "sigil_mode": "Any",
+              "relics": [],
+              "traits": [],
+              "trait_mode": "All",
+              "specs": [],
+              "skill_selections": [],
+              "skill_selections_mode": "All",
+              "prof_selections": [],
+              "mounts": []
+            },
+            "map": {
+              "category": [],
+              "whitelist": true,
+              "ids": []
+            }
+          },
+          "animation": null,
+          "type": "Icon",
+          "icon": "Automatic",
+          "tint": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "zoom": 1.0,
+          "round": 0.0,
+          "border_size": 0.0,
+          "border_color": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "conditions": [],
+          "duration_bar": true,
+          "duration_text": true,
+          "stacks_text": false,
+          "size": [
+            42.0,
+            42.0
+          ]
+        }
+      ]
+    },
+    {
+      "enabled": true,
+      "name": "Criical Condis",
+      "anchor": "Parent",
+      "pos": [
+        8.0,
+        -274.0
+      ],
+      "opacity": 1.0,
+      "trigger": {
+        "source": {
+          "type": "Inherit"
+        },
+        "threshold": {
+          "threshold_type": "Always",
+          "amount_type": "Intensity"
+        }
+      },
+      "filter": {
+        "player": {
+          "combat": null,
+          "weapons": [],
+          "weapon_mode": "Any",
+          "sigils": [],
+          "sigil_mode": "Any",
+          "relics": [],
+          "traits": [],
+          "trait_mode": "All",
+          "specs": [],
+          "skill_selections": [],
+          "skill_selections_mode": "All",
+          "prof_selections": [],
+          "mounts": []
+        },
+        "map": {
+          "category": [],
+          "whitelist": true,
+          "ids": []
+        }
+      },
+      "animation": null,
+      "type": "Group",
+      "members": [
+        {
+          "enabled": true,
+          "name": "Background",
+          "anchor": "Parent",
+          "pos": [
+            88.0,
+            614.0
+          ],
+          "opacity": 1.0,
+          "trigger": {
+            "source": {
+              "type": "Inherit"
+            },
+            "threshold": {
+              "threshold_type": "Always",
+              "amount_type": "Intensity"
+            }
+          },
+          "filter": {
+            "player": {
+              "combat": null,
+              "weapons": [],
+              "weapon_mode": "Any",
+              "sigils": [],
+              "sigil_mode": "Any",
+              "relics": [],
+              "traits": [],
+              "trait_mode": "All",
+              "specs": [],
+              "skill_selections": [],
+              "skill_selections_mode": "All",
+              "prof_selections": [],
+              "mounts": []
+            },
+            "map": {
+              "category": [],
+              "whitelist": true,
+              "ids": []
+            }
+          },
+          "animation": null,
+          "type": "Bar",
+          "progress_kind": "Duration",
+          "max": 25.0,
+          "lower_bound": 0.0,
+          "upper_bound": 1.0,
+          "fill": [
+            9.9999e-7,
+            0.000001,
+            9.9999e-7,
+            0.9378531
+          ],
+          "background": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "border_size": 1.0,
+          "border_color": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "tick_size": 1.0,
+          "tick_color": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "conditions": [],
+          "size": [
+            85.0,
+            45.0
+          ],
+          "align": "Center",
+          "direction": "Right",
+          "tick_unit": "Percent",
+          "ticks": []
+        },
+        {
+          "enabled": true,
+          "name": "Fear",
+          "anchor": "Parent",
+          "pos": [
+            69.0,
+            615.0
+          ],
+          "opacity": 1.0,
+          "trigger": {
+            "source": {
+              "type": "Buff",
+              "combatant": "Player",
+              "ids": [
+                736
+              ]
+            },
+            "threshold": {
+              "threshold_type": "Present",
+              "amount_type": "Intensity"
+            }
+          },
+          "filter": {
+            "player": {
+              "combat": null,
+              "weapons": [],
+              "weapon_mode": "Any",
+              "sigils": [],
+              "sigil_mode": "Any",
+              "relics": [],
+              "traits": [],
+              "trait_mode": "All",
+              "specs": [],
+              "skill_selections": [],
+              "skill_selections_mode": "All",
+              "prof_selections": [],
+              "mounts": []
+            },
+            "map": {
+              "category": [],
+              "whitelist": true,
+              "ids": []
+            }
+          },
+          "animation": null,
+          "type": "Icon",
+          "icon": "Automatic",
+          "tint": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "zoom": 1.0,
+          "round": 0.0,
+          "border_size": 0.0,
+          "border_color": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "conditions": [],
+          "duration_bar": true,
+          "duration_text": true,
+          "stacks_text": false,
+          "size": [
+            42.0,
+            42.0
+          ]
+        },
+        {
+          "enabled": true,
+          "name": "Immobilize",
+          "anchor": "Parent",
+          "pos": [
+            109.0,
+            616.0
+          ],
+          "opacity": 1.0,
+          "trigger": {
+            "source": {
+              "type": "Buff",
+              "combatant": "Player",
+              "ids": [
+                723
+              ]
+            },
+            "threshold": {
+              "threshold_type": "Present",
+              "amount_type": "Intensity"
+            }
+          },
+          "filter": {
+            "player": {
+              "combat": null,
+              "weapons": [],
+              "weapon_mode": "Any",
+              "sigils": [],
+              "sigil_mode": "Any",
+              "relics": [],
+              "traits": [],
+              "trait_mode": "All",
+              "specs": [],
+              "skill_selections": [],
+              "skill_selections_mode": "All",
+              "prof_selections": [],
+              "mounts": []
+            },
+            "map": {
+              "category": [],
+              "whitelist": true,
+              "ids": []
+            }
+          },
+          "animation": null,
+          "type": "Icon",
+          "icon": "Automatic",
+          "tint": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "zoom": 1.0,
+          "round": 0.0,
+          "border_size": 0.0,
+          "border_color": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "conditions": [],
+          "duration_bar": true,
+          "duration_text": true,
+          "stacks_text": true,
+          "size": [
+            42.0,
+            42.0
+          ]
+        }
+      ]
+    }
+  ]
+}
