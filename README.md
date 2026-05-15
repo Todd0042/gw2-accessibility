@@ -4,6 +4,20 @@ A Guild Wars 2 Nexus addon providing accessibility features for players with vis
 
 ## Features
 
+### Keybind Overlay
+- Displays your GW2 keybindings as an on-screen overlay during gameplay
+- Reads your exported GW2 keybind XML file automatically (no manual path entry needed)
+- Organized into 10 categories: **Movement, Skills, Targeting, Mounts, Squad, Camera, Screenshot, Map, UI, Templates**
+- Each category can be individually shown or hidden
+- Configurable **anchor point** (9 positions), **X/Y offset**, and **opacity**
+- Anchor point pins the matching corner of the overlay to that screen position (e.g. Top Right → overlay's top-right corner sits at the screen's top-right)
+- Skills section shows a vertical list: Weapon Skills 1–5, Healing, Utility 1–3, Elite, Special Action, Weapon Swap
+
+### Ready Check TTS
+- Speaks **"Ready Check Initiated."** when the squad leader starts a ready check
+- Requires the [Unofficial Extras](https://github.com/Krappa322/arcdps_unofficial_extras_releases) ArcDPS plugin
+- Toggleable independently in settings
+
 ### Mouse Position Management
 - **Toggle or hold** a keybind to snap the mouse cursor between two configurable positions
 - Each position has independent **anchor point** (9 positions) and **X/Y offset** settings
@@ -43,11 +57,13 @@ A Guild Wars 2 Nexus addon providing accessibility features for players with vis
 
 ### Food & Utility Expiry Alerts
 - Speaks **"food expired"** or **"utility expired"** when consumable buffs end
-- Automatically detects food (Steak, Flatbread, Salad, Soup, Pancake) vs utility (sharpening stones, tuning crystals, maintenance oils)
-- Only announces buffs that lasted 1+ minute to avoid false positives
+- Detects food by name keywords: Steak, Soup, Salad, Flatbread, Rendang, Pie, Cake, Cookie, Bread, Stew, Chowder, Dumpling, Noodles, Rice, Tacos, Burger, Sausage, Egg, Curry, Omelet, Pancake, Waffle, Crepe, Muffin, Scone, Tart, Pudding, Candy, and more
+- Detects utility consumables by name keywords: Sharpening, Crystal, Oil, Tuning, Maintenance, Writ, Thesis, Slaying, Potion, Venom, Primer, and more
+- Only announces buffs that lasted 1+ minute to avoid false positives from short-duration buffs
 
 ### Ally Downed Alerts
-- Speaks **"PlayerName downed"** when a squad member goes downed
+- Speaks **"PlayerName downed"** when a party or squad member goes downed
+- **Squad Only** option: only announces downed players when you are in a squad
 - Each player is announced only once per down cycle
 - Cleared from tracking when the player is revived
 
@@ -65,11 +81,22 @@ A Guild Wars 2 Nexus addon providing accessibility features for players with vis
 - [Events: Chat](https://github.com/Vonsh/gw2-chat) addon (by Vonsh.1427) — required for Chat TTS
 - [Arcdps Integration](https://github.com/gw2-addon-loader/ArcDPSIntegration) addon (bundled with Nexus) — required for combat events and mechanic alerts
 
+**Optional:**
+- [Unofficial Extras](https://github.com/Krappa322/arcdps_unofficial_extras_releases) — required for Ready Check TTS
+
 ## Installation
 
-1. Install Nexus addon loader if not already installed
+### Windows
+
+1. Install Nexus addon loader
 2. Place `GW2Accessibility.dll` in `%LOCALAPPDATA%\Nexus\addons\GW2Accessibility\`
 3. Launch GW2 and open Nexus settings to configure
+
+### Linux / Wine / Proton
+
+1. Follow the Windows steps above (the DLL path is inside your Wine prefix)
+2. Set up the TTS helper daemon for audio output — see [TTS_SETUP.md](TTS_SETUP.md)
+3. Export your keybinds in-game (**Game Menu → Options → Controls → Export**) so the keybind overlay can read them
 
 ## Configuration
 
