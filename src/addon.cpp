@@ -293,13 +293,6 @@ static const DWORD g_ActiveBuffTimeout = 3000;
 
 // Food/utility expiry tracking
 static bool g_FoodUtilityExpiryEnabled = false;
-static std::unordered_map<unsigned int, DWORD> g_TrackedFoodUtility;
-static const DWORD g_FoodUtilityMinDuration = 60000; // must be active >1 min to be food/utility
-// On map change arcdps sends no remove events for stripped consumables.
-// We move tracked buffs here and wait to see if BUFF_INIT re-reports them on the new map.
-static std::unordered_map<unsigned int, DWORD> g_PendingFoodVerify; // skillID -> deadline
-static const DWORD g_FoodVerifyTimeout = 30000; // 30s to wait for BUFF_INIT re-confirmation
-static uint32_t g_LastMapId = 0;
 
 // Squad state tracking
 static bool g_InSquad = false;
@@ -2192,7 +2185,43 @@ static void InitSAPI()
     }
 
     if (g_TtsReady)
+    {
+        // CoCreateInstance(CLSID_SpVoice) uses the legacy Control Panel SAPI voice from
+        // HKCU\Software\Microsoft\Speech\CurrentUserData. Windows Settings stores its choice
+        // separately under Speech_OneCore. Try to apply that token so the user's selected
+        // voice is actually used.
+        static const GUID kCLSID_SpObjectToken =
+            {0xEF411752,0x3736,0x4CB4,{0x9C,0x8C,0x8E,0xF4,0xCC,0xB5,0x8E,0xFE}};
+        static const GUID kIID_ISpObjectToken =
+            {0x14056581,0xE16C,0x11D2,{0xBB,0x90,0x00,0xC0,0x4F,0x8E,0xE6,0xC0}};
+
+        HKEY hKey = nullptr;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER,
+                L"Software\\Microsoft\\Speech_OneCore\\CurrentUserData",
+                0, KEY_READ, &hKey) == ERROR_SUCCESS)
+        {
+            wchar_t tokenId[1024] = {};
+            DWORD cbSize = sizeof(tokenId);
+            DWORD dwType = REG_SZ;
+            if (RegQueryValueExW(hKey, L"CurrentToken", nullptr, &dwType,
+                                 reinterpret_cast<LPBYTE>(tokenId), &cbSize) == ERROR_SUCCESS
+                && tokenId[0] != L'\0')
+            {
+                ISpObjectToken* pToken = nullptr;
+                HRESULT hr2 = CoCreateInstance(kCLSID_SpObjectToken, nullptr, CLSCTX_ALL,
+                                               kIID_ISpObjectToken, (void**)&pToken);
+                if (SUCCEEDED(hr2) && pToken)
+                {
+                    if (SUCCEEDED(pToken->SetId(nullptr, tokenId, FALSE)))
+                        g_pVoice->SetVoice(pToken);
+                    pToken->Release();
+                }
+            }
+            RegCloseKey(hKey);
+        }
+
         g_API->Log(LOGL_INFO, "GW2Accessibility", "[TTS] SAPI voice initialized successfully");
+    }
     else if (g_IsWine)
     {
         g_API->Log(LOGL_INFO, "GW2Accessibility", "[TTS] SAPI unavailable (Wine detected), enabling espeak-ng pipe fallback");
@@ -2343,28 +2372,6 @@ static void OnCombatEvent(void* aEventArgs)
             cbt->skillname ? cbt->skillname : "(null)");
         g_API->Log(LOGL_INFO, "GW2Accessibility", fdbg);
 
-        if (g_FoodUtilityExpiryEnabled)
-        {
-            // Only track Nourishment (17825) and Enhancement (9963) — the universal
-            // consumable indicator buffs present regardless of which food/utility is used.
-            static const unsigned int NOURISHMENT = 17825;
-            static const unsigned int ENHANCEMENT  = 9963;
-            if (sid == NOURISHMENT || sid == ENHANCEMENT)
-            {
-                // If pending map-change verification, buff survived — cancel the alarm
-                if (g_PendingFoodVerify.erase(sid))
-                {
-                    snprintf(fdbg, sizeof(fdbg), "[FOOD_INIT] re-confirmed after map change: skill=%u name=\"%s\"",
-                        sid, cbt->skillname ? cbt->skillname : "(null)");
-                    g_API->Log(LOGL_INFO, "GW2Accessibility", fdbg);
-                }
-
-                g_TrackedFoodUtility[sid] = GetTickCount() - g_FoodUtilityMinDuration;
-                snprintf(fdbg, sizeof(fdbg), "[FOOD_INIT] tracking: skill=%u name=\"%s\"",
-                    sid, cbt->skillname ? cbt->skillname : "(null)");
-                g_API->Log(LOGL_INFO, "GW2Accessibility", fdbg);
-            }
-        }
         return;
     }
 
@@ -2455,16 +2462,6 @@ static void OnCombatEvent(void* aEventArgs)
     }
 
     // ── TTS filters (dst must be self, skip in WvW) ─────────────────────────
-    if (g_FoodUtilityExpiryEnabled && !isRemove)
-    {
-        char fdbg[512];
-        snprintf(fdbg, sizeof(fdbg), "[BUFF_ALL] skill=%u name=\"%s\" dst_self=%d",
-            skillID,
-            cbt->skillname ? cbt->skillname : "(null)",
-            cbt->dst ? (int)cbt->dst->IsSelf : -1);
-        g_API->Log(LOGL_INFO, "GW2Accessibility", fdbg);
-    }
-
     if (!cbt->dst || cbt->dst->IsSelf != 1)
     {
         return;
@@ -2502,35 +2499,15 @@ static void OnCombatEvent(void* aEventArgs)
         }
     }
 
-    // ── Food/Utility expiry tracking (runs for all buff events) ──────────────
-    if (g_FoodUtilityExpiryEnabled)
+    // ── Food/Utility expiry: GW2 applies Malnourished/Diminished when consumables expire ─
+    if (g_FoodUtilityExpiryEnabled && !isRemove)
     {
-        if (isRemove)
+        const char* name = cbt->skillname;
+        if (name && (strcmp(name, "Malnourished") == 0 || strcmp(name, "Diminished") == 0))
         {
-            auto fuIt = g_TrackedFoodUtility.find(skillID);
-            if (fuIt != g_TrackedFoodUtility.end() && now - fuIt->second >= g_FoodUtilityMinDuration)
-            {
-                std::string buffName = FetchSkillName(skillID, cbt->skillname);
-                { char fdbg[512]; snprintf(fdbg, sizeof(fdbg), "[FOOD_DBG] remove: skill=%u name=\"%s\"", skillID, buffName.c_str()); g_API->Log(LOGL_INFO, "GW2Accessibility", fdbg); }
-
-                if (buffName == "Nourishment" || buffName == "Enhancement")
-                {
-                    std::string speech = buffName + " expired";
-                    InitSAPI();
-                    if (g_TtsReady)
-                        SpeakText(Utf8ToWide(speech.c_str()).c_str());
-                }
-            }
-            g_TrackedFoodUtility.erase(skillID);
-        }
-        else
-        {
-            if (skillID == 17825 || skillID == 9963) // Nourishment / Enhancement
-            {
-                g_TrackedFoodUtility[skillID] = now;
-                const char* buffName = (cbt->skillname && cbt->skillname[0]) ? cbt->skillname : "(no name)";
-                { char fdbg[512]; snprintf(fdbg, sizeof(fdbg), "[FOOD_DBG] tracking buff add: skill=%u name=\"%s\"", skillID, buffName); g_API->Log(LOGL_INFO, "GW2Accessibility", fdbg); }
-            }
+            InitSAPI();
+            if (g_TtsReady)
+                SpeakText(Utf8ToWide(name).c_str());
         }
     }
 
@@ -2987,44 +2964,6 @@ static void SetupImGui()
 static void OnRender()
 {
     SetupImGui();
-
-    // ── Food/utility map-change detection and expiry check ───────────────────
-    if (g_FoodUtilityExpiryEnabled && g_MumbleData)
-    {
-        DWORD now = GetTickCount();
-        uint32_t currentMapId = g_MumbleData->Context.MapID;
-
-        // Detect map change via Mumble (arcdps CBTS_MAPID is not reliably sent to addons)
-        if (g_LastMapId != 0 && currentMapId != g_LastMapId && !g_TrackedFoodUtility.empty())
-        {
-            DWORD deadline = now + g_FoodVerifyTimeout;
-            for (auto& [sid, ts] : g_TrackedFoodUtility)
-                g_PendingFoodVerify[sid] = deadline;
-            g_TrackedFoodUtility.clear();
-            g_API->Log(LOGL_INFO, "GW2Accessibility", "[FOOD] Map change — awaiting BUFF_INIT re-confirmation");
-        }
-        if (currentMapId != 0)
-            g_LastMapId = currentMapId;
-
-        // Fire TTS for any tracked buffs not re-confirmed after the timeout
-        for (auto it = g_PendingFoodVerify.begin(); it != g_PendingFoodVerify.end(); )
-        {
-            if (now >= it->second)
-            {
-                auto nameIt = g_DebuffNameCache.find(it->first);
-                if (nameIt != g_DebuffNameCache.end())
-                {
-                    std::string speech = nameIt->second + " expired";
-                    InitSAPI();
-                    if (g_TtsReady)
-                        SpeakText(Utf8ToWide(speech.c_str()).c_str());
-                    g_API->Log(LOGL_INFO, "GW2Accessibility", ("[FOOD] map-change expiry: " + nameIt->second).c_str());
-                }
-                it = g_PendingFoodVerify.erase(it);
-            }
-            else ++it;
-        }
-    }
 
     // Staggered pre-fetch: start 30s after load, fetch one icon every 5s
     if (!g_PrefetchStarted && g_LoadTime != 0 && GetTickCount() - g_LoadTime >= 30000)
@@ -3865,7 +3804,7 @@ static void OnOptionsRender()
         ImGui::TextDisabled("Speaks \"PlayerName downed\" when a squad member goes downed.");
 
         changed |= ImGui::Checkbox("Announce Food/Utility Expiry", &g_FoodUtilityExpiryEnabled);
-        ImGui::TextDisabled("Speaks \"Nourishment expired\" or \"Enhancement expired\" when consumable buffs are removed.");
+        ImGui::TextDisabled("Speaks \"Malnourished\" or \"Diminished\" when food or utility consumables expire or are stripped.");
 
         changed |= ImGui::Checkbox("Announce Ready Check", &g_ReadyCheckTtsEnabled);
         ImGui::TextDisabled("Speaks \"Ready check\" when the squad leader initiates one.");
@@ -4103,7 +4042,7 @@ void AddonUnload()
 
 extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef()
 {
-    static AddonVersion_t s_Version = { 0, 2, 1, 0 };
+    static AddonVersion_t s_Version = { 0, 2, 2, 0 };
 
     static AddonDefinition_t s_Def = {};
     s_Def.Signature  = -2;

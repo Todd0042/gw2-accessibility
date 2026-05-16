@@ -43,4 +43,5 @@ target_link_libraries(GW2Accessibility PRIVATE
     -lwinhttp
     -lshell32
     -lole32
+    -ladvapi32
 )

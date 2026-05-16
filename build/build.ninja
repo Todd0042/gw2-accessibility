@@ -121,7 +121,7 @@ build GW2Accessibility.dll libGW2Accessibility.dll.a: CXX_SHARED_LIBRARY_LINKER_
   CONFIG = Release
   LANGUAGE_COMPILE_FLAGS = -O3 -DNDEBUG
   LINK_FLAGS = -shared
-  LINK_LIBRARIES = -static-libgcc  -static-libstdc++  -Wl,-Bstatic,--whole-archive,-lwinpthread,--no-whole-archive  -Wl,-Bdynamic  -luuid  -lsapi  -lwinhttp  -lshell32  -lole32  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
+  LINK_LIBRARIES = -static-libgcc  -static-libstdc++  -Wl,-Bstatic,--whole-archive,-lwinpthread,--no-whole-archive  -Wl,-Bdynamic  -luuid  -lsapi  -lwinhttp  -lshell32  -lole32  -ladvapi32  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
   OBJECT_DIR = CMakeFiles\GW2Accessibility.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
