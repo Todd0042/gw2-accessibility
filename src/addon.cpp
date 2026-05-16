@@ -293,6 +293,14 @@ static const DWORD g_ActiveBuffTimeout = 3000;
 
 // Food/utility expiry tracking
 static bool g_FoodUtilityExpiryEnabled = false;
+static bool g_HasNourishment = false;       // skill 17825 confirmed active
+static bool g_HasEnhancement = false;       // skill 9963 confirmed active
+static uint32_t g_FoodLastMapId = 0;
+static DWORD g_MapLoadSettleTick = 0;       // tick when map change detected
+static bool g_MapLoadCheckDone = false;
+static DWORD g_LastFoodReminderTick = 0;
+static const DWORD FOOD_SETTLE_MS = 5000;           // wait 5s for BUFF_INITs
+static const DWORD FOOD_REMINDER_MS = 5 * 60 * 1000; // remind every 5 min
 
 // Squad state tracking
 static bool g_InSquad = false;
@@ -2350,16 +2358,28 @@ static void OnCombatEvent(void* aEventArgs)
 
     if (cbt->ev->Buff != 1)
     {
-        g_API->Log(LOGL_DEBUG, "GW2Accessibility", "[COMBAT] Buff != 1 (not a buff event) — ignored");
         return;
     }
 
-    // IsStatechange=69: arcdps reports Nourishment/Enhancement (and similar persistent buffs)
-    // with this state change value rather than as regular apply events (IsStatechange=0).
+    // IsStatechange=69: arcdps reports persistent buffs active at map load with this value.
     // Also handle 18 (CBTS_BUFFINITIAL) as a fallback for other arcdps versions.
     if ((cbt->ev->IsStatechange == 69 || cbt->ev->IsStatechange == 18) &&
         cbt->dst && cbt->dst->IsSelf == 1)
     {
+        // Skip login/character-select screen (MapID == 0)
+        uint32_t mapId = g_MumbleData ? g_MumbleData->Context.MapID : 0;
+        if (mapId == 0) return;
+
+        // Log a header the first time we see a BUFF_INIT for a new map
+        static uint32_t s_LastDumpMapId = 0;
+        if (mapId != s_LastDumpMapId)
+        {
+            s_LastDumpMapId = mapId;
+            char hdr[128];
+            snprintf(hdr, sizeof(hdr), "[BUFF_DUMP] === Map load MapID=%u — active buffs follow ===", mapId);
+            g_API->Log(LOGL_INFO, "GW2Accessibility", hdr);
+        }
+
         unsigned int sid = NormalizeMechanicID(cbt->ev->SkillID);
 
         // Cache the name so FetchSkillName can find it on the remove event
@@ -2367,10 +2387,15 @@ static void OnCombatEvent(void* aEventArgs)
             g_DebuffNameCache[sid] = cbt->skillname;
 
         char fdbg[512];
-        snprintf(fdbg, sizeof(fdbg), "[BUFF_INIT] statechange=%u skill=%u name=\"%s\"",
-            (unsigned)cbt->ev->IsStatechange, sid,
-            cbt->skillname ? cbt->skillname : "(null)");
+        snprintf(fdbg, sizeof(fdbg), "[BUFF_DUMP] skill=%u name=\"%s\"",
+            sid, cbt->skillname ? cbt->skillname : "(null)");
         g_API->Log(LOGL_INFO, "GW2Accessibility", fdbg);
+
+        if (g_FoodUtilityExpiryEnabled)
+        {
+            if (sid == 17825) g_HasNourishment = true;
+            if (sid == 9963)  g_HasEnhancement = true;
+        }
 
         return;
     }
@@ -2499,15 +2524,23 @@ static void OnCombatEvent(void* aEventArgs)
         }
     }
 
-    // ── Food/Utility expiry: GW2 applies Malnourished/Diminished when consumables expire ─
-    if (g_FoodUtilityExpiryEnabled && !isRemove)
+    // ── Food/Utility expiry tracking ─────────────────────────────────────────
+    if (g_FoodUtilityExpiryEnabled && (skillID == 17825 || skillID == 9963))
     {
-        const char* name = cbt->skillname;
-        if (name && (strcmp(name, "Malnourished") == 0 || strcmp(name, "Diminished") == 0))
+        bool& hasIt   = (skillID == 17825) ? g_HasNourishment : g_HasEnhancement;
+        const wchar_t* speech = (skillID == 17825) ? L"Malnourished" : L"Diminished";
+        if (isRemove)
         {
-            InitSAPI();
-            if (g_TtsReady)
-                SpeakText(Utf8ToWide(name).c_str());
+            if (hasIt)
+            {
+                hasIt = false;
+                InitSAPI();
+                if (g_TtsReady) SpeakText(speech);
+            }
+        }
+        else
+        {
+            hasIt = true;
         }
     }
 
@@ -2964,6 +2997,42 @@ static void SetupImGui()
 static void OnRender()
 {
     SetupImGui();
+
+    // ── Food/utility map-load and periodic check ─────────────────────────────
+    if (g_FoodUtilityExpiryEnabled && g_MumbleData)
+    {
+        DWORD now = GetTickCount();
+        uint32_t mapId = g_MumbleData->Context.MapID;
+
+        if (mapId != 0 && mapId != g_FoodLastMapId)
+        {
+            g_FoodLastMapId = mapId;
+            g_HasNourishment = false;
+            g_HasEnhancement = false;
+            g_MapLoadSettleTick = now;
+            g_MapLoadCheckDone = false;
+        }
+
+        // After settle time: announce whichever consumables are missing
+        if (!g_MapLoadCheckDone && g_MapLoadSettleTick != 0 &&
+            now - g_MapLoadSettleTick >= FOOD_SETTLE_MS)
+        {
+            g_MapLoadCheckDone = true;
+            g_LastFoodReminderTick = now;
+            InitSAPI();
+            if (!g_HasNourishment && g_TtsReady) SpeakText(L"Malnourished");
+            if (!g_HasEnhancement && g_TtsReady) SpeakText(L"Diminished");
+        }
+
+        // Periodic reminder every 5 minutes if still missing
+        if (g_MapLoadCheckDone && now - g_LastFoodReminderTick >= FOOD_REMINDER_MS)
+        {
+            g_LastFoodReminderTick = now;
+            InitSAPI();
+            if (!g_HasNourishment && g_TtsReady) SpeakText(L"Malnourished");
+            if (!g_HasEnhancement && g_TtsReady) SpeakText(L"Diminished");
+        }
+    }
 
     // Staggered pre-fetch: start 30s after load, fetch one icon every 5s
     if (!g_PrefetchStarted && g_LoadTime != 0 && GetTickCount() - g_LoadTime >= 30000)
@@ -3804,7 +3873,7 @@ static void OnOptionsRender()
         ImGui::TextDisabled("Speaks \"PlayerName downed\" when a squad member goes downed.");
 
         changed |= ImGui::Checkbox("Announce Food/Utility Expiry", &g_FoodUtilityExpiryEnabled);
-        ImGui::TextDisabled("Speaks \"Malnourished\" or \"Diminished\" when food or utility consumables expire or are stripped.");
+        ImGui::TextDisabled("Speaks \"Malnourished\" or \"Diminished\" at map load and every 5 minutes if consumables are missing.");
 
         changed |= ImGui::Checkbox("Announce Ready Check", &g_ReadyCheckTtsEnabled);
         ImGui::TextDisabled("Speaks \"Ready check\" when the squad leader initiates one.");
