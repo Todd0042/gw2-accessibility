@@ -2188,116 +2188,82 @@ static void InitSAPI()
 
     if (g_TtsReady)
     {
-        // CoCreateInstance(CLSID_SpVoice) picks the legacy Control Panel SAPI voice from
-        // HKCU\Software\Microsoft\Speech\CurrentUserData. Windows Settings stores its selection
-        // under Speech_OneCore. Read that token and apply it so the user's chosen voice is used.
-        static const GUID kCLSID_SpObjectToken =
-            {0xEF411752,0x3736,0x4CB4,{0x9C,0x8C,0x8E,0xF4,0xCC,0xB5,0x8E,0xFE}};
-        static const GUID kIID_ISpObjectToken =
-            {0x14056581,0xE16C,0x11D2,{0xBB,0x90,0x00,0xC0,0x4F,0x8E,0xE6,0xC0}};
+        // CoCreateInstance(CLSID_SpVoice) picks the legacy Control Panel SAPI voice.
+        // Windows 11 Settings > Time & Language > Speech stores its selection in the
+        // Speech_OneCore voice category. Use ISpObjectTokenCategory::GetDefaultTokenId()
+        // to retrieve it — this is the proper SAPI API that automatically checks the
+        // user preference key (HKCU\...\Speech_OneCore\CurrentUserData) and falls back
+        // to the system default, matching exactly what Windows Settings controls.
 
-        g_API->Log(LOGL_INFO, "GW2Accessibility", "[TTS] attempting OneCore voice selection from Windows Settings");
+        // Try OneCore category first (Windows 11 Settings), then legacy SAPI category.
+        struct { const wchar_t* catId; const char* label; } categories[] = {
+            { L"HKLM\\SOFTWARE\\Microsoft\\Speech_OneCore\\Voices", "OneCore" },
+            { L"HKLM\\SOFTWARE\\Microsoft\\Speech\\Voices",         "Legacy SAPI" },
+        };
 
-        HKEY hKey = nullptr;
-        LONG regOpen = RegOpenKeyExW(HKEY_CURRENT_USER,
-                L"Software\\Microsoft\\Speech_OneCore\\CurrentUserData",
-                0, KEY_READ, &hKey);
-        snprintf(buf, sizeof(buf), "[TTS] RegOpenKey(Speech_OneCore\\CurrentUserData) = %ld (%s)",
-            regOpen, regOpen == ERROR_SUCCESS ? "OK" : "FAILED");
-        g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
-
-        // Helper lambda: given a token ID string, create a SpObjectToken, set its ID,
-        // and apply it as the active SAPI voice. Returns true on full success.
         bool voiceApplied = false;
-        auto TryApplyToken = [&](const wchar_t* tokenId, const wchar_t* category) -> bool
+        for (auto& cat : categories)
         {
-            char tokenUtf8[1024] = {};
-            WideCharToMultiByte(CP_UTF8, 0, tokenId, -1, tokenUtf8, sizeof(tokenUtf8), nullptr, nullptr);
-            char catUtf8[512] = {};
-            WideCharToMultiByte(CP_UTF8, 0, category ? category : L"(null)", -1, catUtf8, sizeof(catUtf8), nullptr, nullptr);
-            snprintf(buf, sizeof(buf), "[TTS] TryApplyToken: id=\"%s\" category=\"%s\"", tokenUtf8, catUtf8);
+            if (voiceApplied) break;
+            snprintf(buf, sizeof(buf), "[TTS] Trying %s voice category", cat.label);
             g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
 
-            ISpObjectToken* pToken = nullptr;
-            HRESULT hr2 = CoCreateInstance(kCLSID_SpObjectToken, nullptr, CLSCTX_ALL,
-                                           kIID_ISpObjectToken, (void**)&pToken);
-            snprintf(buf, sizeof(buf), "[TTS]   CoCreateInstance(SpObjectToken) = 0x%08lX (%s)",
-                (unsigned long)hr2, SUCCEEDED(hr2) ? "OK" : "FAILED");
+            ISpObjectTokenCategory* pCat = nullptr;
+            HRESULT hrCat = CoCreateInstance(CLSID_SpObjectTokenCategory, nullptr, CLSCTX_ALL,
+                                             IID_ISpObjectTokenCategory, (void**)&pCat);
+            snprintf(buf, sizeof(buf), "[TTS]   CoCreateInstance(SpObjectTokenCategory) = 0x%08lX (%s)",
+                (unsigned long)hrCat, SUCCEEDED(hrCat) ? "OK" : "FAILED");
             g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
-            if (FAILED(hr2) || !pToken) return false;
+            if (FAILED(hrCat) || !pCat) continue;
 
-            HRESULT hrSetId = pToken->SetId(category, tokenId, FALSE);
-            snprintf(buf, sizeof(buf), "[TTS]   SetId() = 0x%08lX (%s)",
+            HRESULT hrSetId = pCat->SetId(cat.catId, FALSE);
+            snprintf(buf, sizeof(buf), "[TTS]   SetId(category) = 0x%08lX (%s)",
                 (unsigned long)hrSetId, SUCCEEDED(hrSetId) ? "OK" : "FAILED");
             g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
 
-            bool ok = false;
             if (SUCCEEDED(hrSetId))
             {
-                HRESULT hrSetVoice = g_pVoice->SetVoice(pToken);
-                snprintf(buf, sizeof(buf), "[TTS]   SetVoice() = 0x%08lX (%s)",
-                    (unsigned long)hrSetVoice, SUCCEEDED(hrSetVoice) ? "OK" : "FAILED");
+                wchar_t* defaultTokenId = nullptr;
+                HRESULT hrDef = pCat->GetDefaultTokenId(&defaultTokenId);
+                snprintf(buf, sizeof(buf), "[TTS]   GetDefaultTokenId() = 0x%08lX (%s)",
+                    (unsigned long)hrDef, SUCCEEDED(hrDef) ? "OK" : "FAILED");
                 g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
-                ok = SUCCEEDED(hrSetVoice);
+
+                if (SUCCEEDED(hrDef) && defaultTokenId)
+                {
+                    char idUtf8[1024] = {};
+                    WideCharToMultiByte(CP_UTF8, 0, defaultTokenId, -1, idUtf8, sizeof(idUtf8), nullptr, nullptr);
+                    snprintf(buf, sizeof(buf), "[TTS]   DefaultTokenId = \"%s\"", idUtf8);
+                    g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
+
+                    ISpObjectToken* pToken = nullptr;
+                    HRESULT hrTok = CoCreateInstance(CLSID_SpObjectToken, nullptr, CLSCTX_ALL,
+                                                     IID_ISpObjectToken, (void**)&pToken);
+                    if (SUCCEEDED(hrTok) && pToken)
+                        hrTok = pToken->SetId(nullptr, defaultTokenId, FALSE);
+                    snprintf(buf, sizeof(buf), "[TTS]   CoCreateInstance+SetId(token) = 0x%08lX (%s)",
+                        (unsigned long)hrTok, SUCCEEDED(hrTok) ? "OK" : "FAILED");
+                    g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
+
+                    if (SUCCEEDED(hrTok) && pToken)
+                    {
+                        HRESULT hrSV = g_pVoice->SetVoice(pToken);
+                        snprintf(buf, sizeof(buf), "[TTS]   SetVoice() = 0x%08lX (%s)",
+                            (unsigned long)hrSV, SUCCEEDED(hrSV) ? "OK" : "FAILED");
+                        g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
+                        voiceApplied = SUCCEEDED(hrSV);
+                        pToken->Release();
+                    }
+                    CoTaskMemFree(defaultTokenId);
+                }
             }
-            pToken->Release();
-            return ok;
-        };
-
-        // Read a string value from an open registry key; returns true and fills tokenId on success.
-        auto ReadRegStr = [&](HKEY key, const wchar_t* valueName, wchar_t* out, DWORD outBytes) -> bool
-        {
-            DWORD cbSize = outBytes;
-            DWORD dwType = REG_SZ;
-            out[0] = L'\0';
-            LONG r = RegQueryValueExW(key, valueName, nullptr, &dwType,
-                                      reinterpret_cast<LPBYTE>(out), &cbSize);
-            char vn[256];
-            WideCharToMultiByte(CP_UTF8, 0, valueName, -1, vn, sizeof(vn), nullptr, nullptr);
-            snprintf(buf, sizeof(buf), "[TTS] RegQueryValue(\"%s\") = %ld (%s)", vn, r, r == 0 ? "OK" : "FAILED");
-            g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
-            return r == ERROR_SUCCESS && out[0] != L'\0';
-        };
-
-        // Try the registry paths Windows uses for the voice selected in Settings.
-        // Windows 10/11 Settings writes to Speech_OneCore; the legacy Control Panel uses Speech.
-        // Value names seen in the wild: "DefaultTokenId" (most common) and "CurrentToken".
-        struct { const wchar_t* regPath; const wchar_t* valueName; const wchar_t* sapiCategory; } attempts[] = {
-            { L"Software\\Microsoft\\Speech_OneCore\\CurrentUserData", L"DefaultTokenId",
-              L"HKLM\\SOFTWARE\\Microsoft\\Speech_OneCore\\Voices" },
-            { L"Software\\Microsoft\\Speech_OneCore\\CurrentUserData", L"CurrentToken",
-              L"HKLM\\SOFTWARE\\Microsoft\\Speech_OneCore\\Voices" },
-            { L"Software\\Microsoft\\Speech\\CurrentUserData",         L"DefaultTokenId",
-              L"HKLM\\SOFTWARE\\Microsoft\\Speech\\Voices" },
-            { L"Software\\Microsoft\\Speech\\CurrentUserData",         L"CurrentToken",
-              L"HKLM\\SOFTWARE\\Microsoft\\Speech\\Voices" },
-        };
-
-        for (auto& a : attempts)
-        {
-            if (voiceApplied) break;
-            char pathUtf8[512] = {};
-            WideCharToMultiByte(CP_UTF8, 0, a.regPath, -1, pathUtf8, sizeof(pathUtf8), nullptr, nullptr);
-            snprintf(buf, sizeof(buf), "[TTS] Trying registry path: HKCU\\%s", pathUtf8);
-            g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
-
-            HKEY hKey2 = nullptr;
-            LONG r = RegOpenKeyExW(HKEY_CURRENT_USER, a.regPath, 0, KEY_READ, &hKey2);
-            snprintf(buf, sizeof(buf), "[TTS]   RegOpenKey = %ld (%s)", r, r == 0 ? "OK" : "FAILED");
-            g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
-            if (r != ERROR_SUCCESS) continue;
-
-            wchar_t tokenId[1024] = {};
-            if (ReadRegStr(hKey2, a.valueName, tokenId, sizeof(tokenId)))
-                voiceApplied = TryApplyToken(tokenId, a.sapiCategory);
-
-            RegCloseKey(hKey2);
+            pCat->Release();
         }
 
         if (!voiceApplied)
-            g_API->Log(LOGL_INFO, "GW2Accessibility", "[TTS] No Windows Settings voice found — using default SAPI voice");
+            g_API->Log(LOGL_INFO, "GW2Accessibility", "[TTS] voice category selection failed — using SAPI default");
 
-        // Log the name of the voice actually in use so we can verify in the log.
+        // Log which voice is actually active so we can verify in the log.
         {
             ISpObjectToken* pCurToken = nullptr;
             if (SUCCEEDED(g_pVoice->GetVoice(&pCurToken)) && pCurToken)
