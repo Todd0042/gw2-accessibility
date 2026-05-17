@@ -296,6 +296,16 @@ static const DWORD g_ActiveBuffTimeout = 3000;
 // are the debuffs arcdps fires when Nourishment/Enhancement wear off.
 static bool g_FoodUtilityExpiryEnabled = false;
 
+// TTS voice and output device selection
+struct TtsDeviceEntry { std::string name; std::string tokenId; };
+static std::vector<TtsDeviceEntry> g_TtsVoices;
+static std::vector<TtsDeviceEntry> g_TtsOutputDevices;
+static std::string g_TtsVoiceTokenId;   // persisted: full HKEY_... path; empty = system default
+static std::string g_TtsOutputTokenId;  // persisted: full HKEY_... path; empty = system default
+static int   g_TtsVoiceIdx   = 0;
+static int   g_TtsOutputIdx  = 0;
+static int   g_TtsVolume     = 100;    // SAPI volume 0-100
+
 // Squad state tracking
 static bool g_InSquad = false;
 
@@ -1849,7 +1859,10 @@ static void SaveSettings()
     tts["teamPvP"] = g_Tts.teamPvP;
     tts["teamWvW"] = g_Tts.teamWvW;
     tts["emote"] = g_Tts.emote;
-    tts["emoteCustom"] = g_Tts.emoteCustom;
+    tts["emoteCustom"]   = g_Tts.emoteCustom;
+    tts["voiceTokenId"]  = g_TtsVoiceTokenId;
+    tts["outputTokenId"] = g_TtsOutputTokenId;
+    tts["volume"]        = g_TtsVolume;
     j["tts"] = tts;
 
     j["mechanicsAnnounce"] = g_MechanicsAnnounceEnabled;
@@ -1997,7 +2010,11 @@ static void LoadSettings()
             g_Tts.teamPvP    = tts.value("teamPvP", false);
             g_Tts.teamWvW    = tts.value("teamWvW", false);
             g_Tts.emote      = tts.value("emote", false);
-            g_Tts.emoteCustom = tts.value("emoteCustom", false);
+            g_Tts.emoteCustom    = tts.value("emoteCustom", false);
+            g_TtsVoiceTokenId    = tts.value("voiceTokenId",  "");
+            g_TtsOutputTokenId   = tts.value("outputTokenId", "");
+            g_TtsVolume          = tts.value("volume", 100);
+            g_TtsVolume          = std::clamp(g_TtsVolume, 0, 100);
         }
 
         g_MechanicsAnnounceEnabled = j.value("mechanicsAnnounce", false);
@@ -2160,6 +2177,94 @@ static std::wstring Utf8ToWide(const char* utf8)
     return wide;
 }
 
+static std::string WideToUtf8(const wchar_t* w)
+{
+    if (!w || !w[0]) return "";
+    int len = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+    if (len <= 1) return "";
+    std::string s(static_cast<size_t>(len) - 1, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w, -1, &s[0], len, nullptr, nullptr);
+    return s;
+}
+
+// Populate g_TtsVoices from HKLM speech voice token registries.
+// Called once at load; call again to refresh after settings load.
+static void EnumerateTtsVoices()
+{
+    g_TtsVoices.clear();
+    g_TtsVoices.push_back({"System Default", ""});
+
+    struct { const wchar_t* subkey; const char* hkeyPrefix; } src[] = {
+        { L"SOFTWARE\\Microsoft\\Speech_OneCore\\Voices\\Tokens",
+          "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Speech_OneCore\\Voices\\Tokens\\" },
+        { L"SOFTWARE\\Microsoft\\Speech\\Voices\\Tokens",
+          "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Speech\\Voices\\Tokens\\" },
+    };
+    for (auto& s : src)
+    {
+        HKEY hCat = nullptr;
+        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, s.subkey, 0, KEY_READ, &hCat) != ERROR_SUCCESS) continue;
+        DWORD idx = 0;
+        wchar_t skName[512]; DWORD skLen = 512;
+        while (RegEnumKeyExW(hCat, idx++, skName, &skLen, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS)
+        {
+            skLen = 512;
+            HKEY hTok = nullptr;
+            if (RegOpenKeyExW(hCat, skName, 0, KEY_READ, &hTok) == ERROR_SUCCESS)
+            {
+                wchar_t dispName[512] = {}; DWORD cbName = sizeof(dispName);
+                RegQueryValueExW(hTok, nullptr, nullptr, nullptr, reinterpret_cast<LPBYTE>(dispName), &cbName);
+                RegCloseKey(hTok);
+                std::string display = WideToUtf8(dispName);
+                if (display.empty()) display = WideToUtf8(skName);
+                std::string tokenId = s.hkeyPrefix + WideToUtf8(skName);
+                g_TtsVoices.push_back({display, tokenId});
+            }
+        }
+        RegCloseKey(hCat);
+    }
+    g_TtsVoiceIdx = 0;
+    for (int i = 0; i < static_cast<int>(g_TtsVoices.size()); i++)
+        if (g_TtsVoices[i].tokenId == g_TtsVoiceTokenId) { g_TtsVoiceIdx = i; break; }
+}
+
+// Populate g_TtsOutputDevices from HKCU SAPI audio output token registry.
+static void EnumerateTtsOutputDevices()
+{
+    g_TtsOutputDevices.clear();
+    g_TtsOutputDevices.push_back({"Default (System)", ""});
+
+    HKEY hCat = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER,
+            L"Software\\Microsoft\\Speech\\AudioOutput\\TokenEnums\\MMAudioOut",
+            0, KEY_READ, &hCat) == ERROR_SUCCESS)
+    {
+        DWORD idx = 0;
+        wchar_t skName[512]; DWORD skLen = 512;
+        while (RegEnumKeyExW(hCat, idx++, skName, &skLen, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS)
+        {
+            skLen = 512;
+            HKEY hDev = nullptr;
+            if (RegOpenKeyExW(hCat, skName, 0, KEY_READ, &hDev) == ERROR_SUCCESS)
+            {
+                wchar_t dispName[512] = {}; DWORD cbName = sizeof(dispName);
+                RegQueryValueExW(hDev, nullptr, nullptr, nullptr, reinterpret_cast<LPBYTE>(dispName), &cbName);
+                RegCloseKey(hDev);
+                std::string display = WideToUtf8(dispName);
+                if (display.empty()) display = WideToUtf8(skName);
+                std::string tokenId =
+                    "HKEY_CURRENT_USER\\Software\\Microsoft\\Speech\\AudioOutput\\TokenEnums\\MMAudioOut\\"
+                    + WideToUtf8(skName);
+                g_TtsOutputDevices.push_back({display, tokenId});
+            }
+        }
+        RegCloseKey(hCat);
+    }
+    g_TtsOutputIdx = 0;
+    for (int i = 0; i < static_cast<int>(g_TtsOutputDevices.size()); i++)
+        if (g_TtsOutputDevices[i].tokenId == g_TtsOutputTokenId) { g_TtsOutputIdx = i; break; }
+}
+
 static void InitSAPI()
 {
     if (g_TtsReady) return;
@@ -2188,82 +2293,55 @@ static void InitSAPI()
 
     if (g_TtsReady)
     {
-        // CoCreateInstance(CLSID_SpVoice) picks the legacy Control Panel SAPI voice.
-        // Windows 11 Settings > Time & Language > Speech stores its selection in the
-        // Speech_OneCore voice category. Use ISpObjectTokenCategory::GetDefaultTokenId()
-        // to retrieve it — this is the proper SAPI API that automatically checks the
-        // user preference key (HKCU\...\Speech_OneCore\CurrentUserData) and falls back
-        // to the system default, matching exactly what Windows Settings controls.
-
-        // Try OneCore category first (Windows 11 Settings), then legacy SAPI category.
-        struct { const wchar_t* catId; const char* label; } categories[] = {
-            { L"HKLM\\SOFTWARE\\Microsoft\\Speech_OneCore\\Voices", "OneCore" },
-            { L"HKLM\\SOFTWARE\\Microsoft\\Speech\\Voices",         "Legacy SAPI" },
-        };
-
-        bool voiceApplied = false;
-        for (auto& cat : categories)
+        // Apply user-selected voice (from addon dropdown).
+        // ISpObjectToken::SetId(nullptr, fullRegistryPath) is used because
+        // ISpObjectTokenCategory::SetId fails in GW2's STA COM apartment.
+        if (!g_TtsVoiceTokenId.empty())
         {
-            if (voiceApplied) break;
-            snprintf(buf, sizeof(buf), "[TTS] Trying %s voice category", cat.label);
-            g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
-
-            ISpObjectTokenCategory* pCat = nullptr;
-            HRESULT hrCat = CoCreateInstance(CLSID_SpObjectTokenCategory, nullptr, CLSCTX_ALL,
-                                             IID_ISpObjectTokenCategory, (void**)&pCat);
-            snprintf(buf, sizeof(buf), "[TTS]   CoCreateInstance(SpObjectTokenCategory) = 0x%08lX (%s)",
-                (unsigned long)hrCat, SUCCEEDED(hrCat) ? "OK" : "FAILED");
-            g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
-            if (FAILED(hrCat) || !pCat) continue;
-
-            HRESULT hrSetId = pCat->SetId(cat.catId, FALSE);
-            snprintf(buf, sizeof(buf), "[TTS]   SetId(category) = 0x%08lX (%s)",
-                (unsigned long)hrSetId, SUCCEEDED(hrSetId) ? "OK" : "FAILED");
-            g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
-
-            if (SUCCEEDED(hrSetId))
+            std::wstring wId = Utf8ToWide(g_TtsVoiceTokenId.c_str());
+            ISpObjectToken* pToken = nullptr;
+            HRESULT hrTok = CoCreateInstance(CLSID_SpObjectToken, nullptr, CLSCTX_ALL,
+                                             IID_ISpObjectToken, (void**)&pToken);
+            if (SUCCEEDED(hrTok) && pToken)
             {
-                wchar_t* defaultTokenId = nullptr;
-                HRESULT hrDef = pCat->GetDefaultTokenId(&defaultTokenId);
-                snprintf(buf, sizeof(buf), "[TTS]   GetDefaultTokenId() = 0x%08lX (%s)",
-                    (unsigned long)hrDef, SUCCEEDED(hrDef) ? "OK" : "FAILED");
-                g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
-
-                if (SUCCEEDED(hrDef) && defaultTokenId)
+                hrTok = pToken->SetId(nullptr, wId.c_str(), FALSE);
+                if (SUCCEEDED(hrTok))
                 {
-                    char idUtf8[1024] = {};
-                    WideCharToMultiByte(CP_UTF8, 0, defaultTokenId, -1, idUtf8, sizeof(idUtf8), nullptr, nullptr);
-                    snprintf(buf, sizeof(buf), "[TTS]   DefaultTokenId = \"%s\"", idUtf8);
-                    g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
-
-                    ISpObjectToken* pToken = nullptr;
-                    HRESULT hrTok = CoCreateInstance(CLSID_SpObjectToken, nullptr, CLSCTX_ALL,
-                                                     IID_ISpObjectToken, (void**)&pToken);
-                    if (SUCCEEDED(hrTok) && pToken)
-                        hrTok = pToken->SetId(nullptr, defaultTokenId, FALSE);
-                    snprintf(buf, sizeof(buf), "[TTS]   CoCreateInstance+SetId(token) = 0x%08lX (%s)",
-                        (unsigned long)hrTok, SUCCEEDED(hrTok) ? "OK" : "FAILED");
-                    g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
-
-                    if (SUCCEEDED(hrTok) && pToken)
-                    {
-                        HRESULT hrSV = g_pVoice->SetVoice(pToken);
-                        snprintf(buf, sizeof(buf), "[TTS]   SetVoice() = 0x%08lX (%s)",
-                            (unsigned long)hrSV, SUCCEEDED(hrSV) ? "OK" : "FAILED");
-                        g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
-                        voiceApplied = SUCCEEDED(hrSV);
-                        pToken->Release();
-                    }
-                    CoTaskMemFree(defaultTokenId);
+                    HRESULT hrSV = g_pVoice->SetVoice(pToken);
+                    snprintf(buf, sizeof(buf), "[TTS] SetVoice(%s) = 0x%08lX (%s)",
+                        g_TtsVoiceTokenId.c_str(), (unsigned long)hrSV, SUCCEEDED(hrSV) ? "OK" : "FAILED");
                 }
+                else
+                    snprintf(buf, sizeof(buf), "[TTS] voice token SetId failed: 0x%08lX", (unsigned long)hrTok);
+                g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
+                pToken->Release();
             }
-            pCat->Release();
         }
 
-        if (!voiceApplied)
-            g_API->Log(LOGL_INFO, "GW2Accessibility", "[TTS] voice category selection failed — using SAPI default");
+        // Apply user-selected output device.
+        if (!g_TtsOutputTokenId.empty())
+        {
+            std::wstring wOutId = Utf8ToWide(g_TtsOutputTokenId.c_str());
+            ISpObjectToken* pOutToken = nullptr;
+            HRESULT hrOut = CoCreateInstance(CLSID_SpObjectToken, nullptr, CLSCTX_ALL,
+                                             IID_ISpObjectToken, (void**)&pOutToken);
+            if (SUCCEEDED(hrOut) && pOutToken)
+            {
+                hrOut = pOutToken->SetId(nullptr, wOutId.c_str(), FALSE);
+                if (SUCCEEDED(hrOut))
+                {
+                    HRESULT hrSO = g_pVoice->SetOutput(pOutToken, FALSE);
+                    snprintf(buf, sizeof(buf), "[TTS] SetOutput(%s) = 0x%08lX (%s)",
+                        g_TtsOutputTokenId.c_str(), (unsigned long)hrSO, SUCCEEDED(hrSO) ? "OK" : "FAILED");
+                }
+                else
+                    snprintf(buf, sizeof(buf), "[TTS] output token SetId failed: 0x%08lX", (unsigned long)hrOut);
+                g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
+                pOutToken->Release();
+            }
+        }
 
-        // Log which voice is actually active so we can verify in the log.
+        // Log the voice name actually in use.
         {
             ISpObjectToken* pCurToken = nullptr;
             if (SUCCEEDED(g_pVoice->GetVoice(&pCurToken)) && pCurToken)
@@ -2281,6 +2359,7 @@ static void InitSAPI()
             }
         }
 
+        g_pVoice->SetVolume(static_cast<USHORT>(g_TtsVolume));
         g_API->Log(LOGL_INFO, "GW2Accessibility", "[TTS] SAPI voice initialized successfully");
     }
     else if (g_IsWine)
@@ -3848,6 +3927,71 @@ static void OnOptionsRender()
     {
         ImGui::Indent();
 
+        // ── TTS Device Settings ──────────────────────────────────────────────────
+        ImGui::TextUnformatted("TTS Voice & Output");
+        ImGui::Separator();
+
+        // Voice dropdown
+        {
+            std::vector<const char*> voiceNames;
+            voiceNames.reserve(g_TtsVoices.size());
+            for (auto& v : g_TtsVoices) voiceNames.push_back(v.name.c_str());
+
+            ImGui::SetNextItemWidth(300.0f);
+            if (ImGui::Combo("Voice##ttsvoice", &g_TtsVoiceIdx,
+                             voiceNames.data(), static_cast<int>(voiceNames.size())))
+            {
+                g_TtsVoiceTokenId = g_TtsVoices[g_TtsVoiceIdx].tokenId;
+                // Force SAPI reinit so new voice takes effect immediately on next speak
+                if (g_pVoice) { g_pVoice->Release(); g_pVoice = nullptr; }
+                g_TtsReady = false;
+                changed = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Refresh##voicerefresh"))
+            {
+                EnumerateTtsVoices();
+                EnumerateTtsOutputDevices();
+            }
+        }
+
+        // Output device dropdown
+        {
+            std::vector<const char*> devNames;
+            devNames.reserve(g_TtsOutputDevices.size());
+            for (auto& d : g_TtsOutputDevices) devNames.push_back(d.name.c_str());
+
+            ImGui::SetNextItemWidth(300.0f);
+            if (ImGui::Combo("Output##ttsoutput", &g_TtsOutputIdx,
+                             devNames.data(), static_cast<int>(devNames.size())))
+            {
+                g_TtsOutputTokenId = g_TtsOutputDevices[g_TtsOutputIdx].tokenId;
+                if (g_pVoice) { g_pVoice->Release(); g_pVoice = nullptr; }
+                g_TtsReady = false;
+                changed = true;
+            }
+        }
+
+        // Volume slider
+        {
+            ImGui::SetNextItemWidth(300.0f);
+            if (ImGui::SliderInt("Volume##ttsvolume", &g_TtsVolume, 0, 100))
+            {
+                g_TtsVolume = std::clamp(g_TtsVolume, 0, 100);
+                if (g_pVoice) g_pVoice->SetVolume(static_cast<USHORT>(g_TtsVolume));
+                changed = true;
+            }
+        }
+
+        // Test button
+        if (ImGui::Button("Test TTS##ttsdevtest"))
+        {
+            InitSAPI();
+            if (g_TtsReady) SpeakText(L"TTS voice test.");
+        }
+
+        ImGui::Dummy(ImVec2(0, 6));
+
         // ── Chat TTS ──
         ImGui::TextUnformatted("Chat TTS");
         ImGui::Separator();
@@ -3871,13 +4015,6 @@ static void OnOptionsRender()
             changed |= ImGui::Checkbox("Team WvW",      &g_Tts.teamWvW);
             changed |= ImGui::Checkbox("Emote",         &g_Tts.emote);
             changed |= ImGui::Checkbox("Emote Custom",  &g_Tts.emoteCustom);
-
-            if (ImGui::Button("Test TTS"))
-            {
-                InitSAPI();
-                if (g_TtsReady)
-                    SpeakText(L"Chat TTS is working. Testing one two three.");
-            }
 
             ImGui::Dummy(ImVec2(0, 4));
             ImGui::TextDisabled("Requires \"Events: Chat\" addon by Vonsh.1427");
@@ -4079,6 +4216,8 @@ void AddonLoad(AddonAPI_t* aAPI)
     g_API = aAPI;
     g_IsWine = DetectWine();
     LoadSettings();
+    EnumerateTtsVoices();
+    EnumerateTtsOutputDevices();
     InitMumble();
     DeployReffectPack();
 
