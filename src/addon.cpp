@@ -4122,7 +4122,7 @@ void AddonUnload()
 
 extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef()
 {
-    static AddonVersion_t s_Version = { 0, 1, 0, 0 };
+    static AddonVersion_t s_Version = { 0, 2, 3, 0 };
 
     static AddonDefinition_t s_Def = {};
     s_Def.Signature  = -2;
