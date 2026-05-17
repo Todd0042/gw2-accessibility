@@ -77,12 +77,11 @@ A Guild Wars 2 Nexus addon providing accessibility features for players with vis
 
 ## Requirements
 
-- [Nexus](https://github.com/gw2-addon-loader/Nexus) addon loader
-- [Events: Chat](https://github.com/Vonsh/gw2-chat) addon (by Vonsh.1427) — required for Chat TTS
-- [Arcdps Integration](https://github.com/gw2-addon-loader/ArcDPSIntegration) addon (bundled with Nexus) — required for combat events and mechanic alerts
+- Nexus addon loader
+- Events:Chat addon (by Vonsh.1427) — required for Chat TTS
 
 **Optional:**
-- [Unofficial Extras](https://github.com/Krappa322/arcdps_unofficial_extras_releases) — required for Ready Check TTS
+- ArcDPS Unofficial Extras — required for Ready Check TTS
 
 ## Installation
 
