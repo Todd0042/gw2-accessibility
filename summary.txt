@@ -1,0 +1,304 @@
+══════════════════════════════════════════════════════════════════════════════
+GW2Accessibility — Guild Wars 2 Nexus Addon
+══════════════════════════════════════════════════════════════════════════════
+
+┌─ OVERVIEW ───────────────────────────────────────────────────────────────┐
+
+A Guild Wars 2 accessibility addon (DLL) loaded by the Nexus addon loader.
+Provides auditory (TTS), visual (boon/condition overlays via Reffect), and
+cognitive (keybind display, mouse position memory) features.
+
+   File:      build/GW2Accessibility.dll
+   Author:    Todd0042
+   Version:   1.1.0 (CMakeLists.txt) / 0.2.3.0 (Nexus API, addon.cpp:4352)
+   License:   Not specified
+
+┌─ BUILD SYSTEM ───────────────────────────────────────────────────────────┐
+
+   Toolchain: MinGW cross-compiler (x86_64-w64-mingw32)
+   File:      toolchain-mingw.cmake
+   Config:    cmake -B build -DCMAKE_BUILD_TYPE=Release
+                 "-DCMAKE_TOOLCHAIN_FILE=toolchain-mingw.cmake"
+   Build:     cmake --build build --config Release
+   Output:    build/GW2Accessibility.dll
+
+   Dependencies (linked):
+     -lsapi       Windows SAPI (speech)
+     -lwinmm      Windows multimedia (waveOutGetDevCaps)
+     -luuid       COM UUIDs
+     -lole32      COM/OLE32 (CoInitializeEx, CoCreateInstance)
+     -lwinhttp    HTTP requests (icon download, GW2 API)
+     -lshell32    Shell APIs
+     -ladvapi32   Registry APIs
+     -lwinpthread (static)  MinGW pthread
+
+   Third-party (in-repo):
+     third_party/imgui/  — Dear ImGui (docking branch) for UI rendering
+     nlohmann/json.hpp   — JSON parsing (header-only, via vcpkg or system)
+
+┌─ NEXUS INTEGRATION ──────────────────────────────────────────────────────┐
+
+   Entry points (addon.cpp):
+     AddonLoad()    — called by Nexus when addon starts (line 4278)
+     AddonUnload()  — called by Nexus when addon stops  (line 4309)
+     GetAddonDef()  — exports AddonDefinition_t for Nexus (line 4350)
+
+   AddonLoad flow:
+     1. DetectWine() — checks for wine_get_version in ntdll.dll
+     2. LoadSettings() — reads config.json from addon directory
+     3. EnumerateTtsVoices() — scans HKLM registry for TTS voice tokens
+     4. EnumerateTtsOutputDevices() — queries waveOutGetDevCaps for audio devices
+     5. InitMumble() — opens MumbleLink shared memory for player identity
+     6. DeployReffectPack() — writes embedded JSON to Reffect packs folder
+     7. Registers keybind, render callbacks (6 GUI callbacks), events
+
+   AddonUnload flow:
+     1. SaveSettings() — writes config.json
+     2. Deregisters all keybinds, GUI callbacks, event subscriptions
+     3. Releases g_pVoice (SAPI), unmaps MumbleLink
+
+┌─ TTS SYSTEM (Windows) ───────────────────────────────────────────────────┐
+
+   Architecture: Windows SAPI5 via COM
+
+   InitSAPI() (line 2259):
+     1. CoInitializeEx (tries MT first, falls back to STA)
+     2. CoCreateInstance(CLSID_SpVoice) → g_pVoice (ISpVoice*)
+     3. Voice: creates ISpObjectToken, calls SetId() with full HKLM path
+     4. Output: CoCreateInstance(CLSID_SpMMAudioOut, IID_ISpMMSysAudio)
+        then ISpMMSysAudio::SetDeviceId(waveIndex), then SetOutput()
+     5. SetVolume(0-100), SetRate(-10 to 10)
+     6. Logs active voice description
+
+   Voice enumeration — EnumerateTtsVoices() (line 2192):
+     Scans two HKLM registry paths for voice tokens:
+       HKLM\SOFTWARE\Microsoft\Speech_OneCore\Voices\Tokens
+       HKLM\SOFTWARE\Microsoft\Speech\Voices\Tokens
+     Each token's (default) value = display name.
+     Token ID = full registry path string.
+     First entry is always "System Default" (empty tokenId).
+
+   Output device enumeration — EnumerateTtsOutputDevices() (line 2235):
+     Uses waveOutGetNumDevs() + waveOutGetDevCapsW() to list audio outputs.
+     Token ID = stringified wave device index ("0", "1", etc.) or "" for default.
+     First entry is always "Default (System)" (empty tokenId).
+
+   Speaking — SpeakText() (line 334):
+     Calls g_pVoice->Speak(text, SPF_ASYNC | SPF_IS_NOT_XML).
+     If SAPI fails and Wine is detected, falls back to SpeakViaWinePipe().
+
+   TTS settings persisted:
+     g_Tts.enabled        — master toggle
+     g_Tts.party/squad/whisper/etc.  — per-channel toggles (13 channels)
+     g_TtsVoiceTokenId    — full HKLM path of selected voice
+     g_TtsOutputTokenId   — wave device index string
+     g_TtsVolume          — 0-100
+     g_TtsRate            — -10 to 10
+
+┌─ TTS SYSTEM (Linux/Wine) ───────────────────────────────────────────────┐
+
+   On Wine/Proton, SAPI is a stub. The addon detects this via DetectWine()
+   and falls back to a named pipe → native Linux TTS engine.
+
+   Flow:
+     1. InitSAPI() — CoCreateInstance(CLSID_SpVoice) FAILS
+     2. g_WineTtsFallback = true (addon.cpp:2368)
+     3. SpeakText() fails → SpeakViaWinePipe() (addon.cpp:155)
+     4. Writes UTF-8 text to ~/.gw2-tts-pipe (via Wine Z:\ drive)
+     5. tts_helper.sh reads pipe and calls espeak-ng or Piper
+
+   Pipe path: Z:\<HOME>\.gw2-tts-pipe  (addon.cpp:140)
+   Config:    ~/.gw2-tts-config (read by tts_helper.sh)
+
+   tts_helper.sh features (tts_helper.sh):
+     ENGINE    — "espeak-ng" (default) or "piper"
+     VOICE     — espeak-ng voice name or Piper model tag
+     SPEED     — espeak-ng words per minute (default 150)
+     PITCH     — espeak-ng pitch (default 40)
+     AMPLITUDE — espeak-ng volume (default 175)
+     Auto-detects Piper binary in several common locations.
+     Searches ~/.local/share/piper-voices for Piper model files.
+     Creates a named pipe at ~/.gw2-tts-pipe.
+     Safe to run multiple times (cleans up stale pipe on start).
+
+   Settings that do NOT work on Linux (no SAPI):
+     Voice dropdown         — HKLM registry empty on Wine, only "System Default"
+     Output device dropdown — waveOutGetDevCaps returns 0, only "Default (System)"
+     Volume slider          — g_TtsVolume stored but pipe ignores it
+     Speed slider           — g_TtsRate stored but pipe ignores it
+     These are controlled in ~/.gw2-tts-config instead.
+
+   The "Test TTS" button in settings WILL work on Linux if the pipe daemon
+   is running — it triggers InitSAPI() which fails, then SpeakViaWinePipe().
+
+┌─ COMBAT EVENT PROCESSING ───────────────────────────────────────────────┐
+
+   OnCombatEvent() (line 2377):
+     Subscribed to EV_ARCDPS_COMBAT_SQUAD and EV_ARCDPS_COMBAT_LOCAL.
+
+   Handles these state changes:
+     5  (CBTS_CHANGEDOWN)  — ally downed announcement
+     3  (CBTS_CHANGEUP)    — ally revived (clear from downed set)
+     1  (ENTERCOMBAT)      — boss fight tracking, Tofu's Toggle
+     10 (REWARD)           — boss death detection
+
+   Handles these buff/skill events (IsStatechange == 0):
+     Necrosis stacks tracking (skillID 47414)
+     Built-in TTS messages (tts_messages.h)
+     Built-in raid mechanics (g_BuiltinMechanics, addon.cpp:224)
+     Custom user mechanics (g_RaidMechanics vector)
+     Read All Debuffs mode (g_ReadAllDebuffs + boon_ignore.h whitelist)
+     Food/utility expiry (46587=Malnourished, 46668=Diminished)
+     Buff duration tracking for icon overlay (15s timeout)
+
+   Self-filter: only processes events where dst->IsSelf (line 2633)
+   WvW blacklist: silences ALL combat TTS on WvW maps (line 2639)
+
+┌─ CHAT TTS ───────────────────────────────────────────────────────────────┐
+
+   OnChatMessage() (line 2873):
+     Requires the "Events: Chat" addon by Vonsh.1427.
+     14 channel types with per-channel enable flags.
+
+   Channel types handled:
+     Party, Squad, Map, Local Say, Whisper, SquadBroadcast,
+     SquadMessage, Guild, Error, GuildMotD, TeamPvP, TeamWvW,
+     Emote, EmoteCustom
+
+   Self-messages are filtered by comparing sender against Mumble identity
+   (g_MumbleData->Identity / g_PlayerName).
+
+┌─ UI / SETTINGS WINDOW ──────────────────────────────────────────────────┐
+
+   OnOptionsRender() (line 3908):
+     Collapsing headers in order:
+       Motor      — mouse position memory (2 slots, anchor + offset %)
+       Auditory   — TTS voice/output/volume/speed, chat channels, alerts,
+                    raid mechanic alerts, allied downed, food expiry,
+                    ready check
+       Visual     — crosshair overlay, Reffect integration info,
+                    icon overlay position/size/spacing
+       Cognitive  — keybind overlay enable/visibility/position/files
+
+   Render callbacks:
+     OnRender                — main overlay elements
+     OnOptionsRender         — Nexus settings panel
+     OnMechanicsWindowRender — raid mechanic configuration window
+     OnEffectManagerRender   — discovered effects management
+     OnKeybindOverlayRender  — keybind display overlay
+     OnKeybindConfigRender   — keybind configuration window
+
+┌─ REFFECT PACK INTEGRATION ──────────────────────────────────────────────┐
+
+   The addon contains an embedded Reffect UI pack definition that it deploys
+   to the Reffect addon's packs directory on startup.
+
+   File:         src/reffect_pack.h (auto-generated from GW2Accessibility.json)
+   Source:       GW2Accessibility.json (project root, 2510 lines)
+   Target:       <reffect addon dir>\packs\GW2Accessibility.json
+
+   Versioning:   "packVersion" field inside the JSON
+                 On deploy, if on-disk version >= embedded version, skip.
+                 If no version found (old file), always overwrite.
+                 Manual deploy button in Settings → Visual section.
+
+   DeployReffectPack() (addon.cpp:678):
+     1. GetReffectPacksDir() — resolves path via Nexus API or fallback
+     2. If file exists and on-disk version >= embedded, skip
+     3. Otherwise, overwrite with embedded g_ReffectPackJson
+
+   Update procedure when GW2Accessibility.json changes:
+     1. Bump "packVersion" by 1 in GW2Accessibility.json
+     2. Re-embed: run the PowerShell command from AGENTS.md
+     3. Rebuild
+
+┌─ KEYBIND OVERLAY ───────────────────────────────────────────────────────┐
+
+   Parses Guild Wars 2's InputBinds XML files to display current keybindings.
+   Configuration: gw2accessibility_keybind.json in addon directory.
+   Reads from: Documents/Guild Wars 2/InputBinds/*.xml
+
+   Sections displayed (10 categories):
+     Movement, Skills, Targeting, Mounts, Squad/Party,
+     Camera, Screenshot, Map, User Interface, Build Templates
+
+   Each section can be individually toggled in config.
+
+┌─ EFFECT MANAGER ─────────────────────────────────────────────────────────┐
+
+   OnEffectManagerRender() (line 3355):
+     Tracks non-standard effects discovered during gameplay.
+     Lets users add them to the tracked conditions or buffs overlay.
+     Manages g_TrackedConditionsExtra and g_TrackedBuffsExtra sets.
+
+┌─ SETTINGS PERSISTENCE ──────────────────────────────────────────────────┐
+
+   Config file: <addon directory>/GW2Accessibility/config.json
+
+   SaveSettings() (line 1787):
+     Writes all settings as a flat JSON object with sections:
+       positions[], crosshair*, keybind* (10+ fields), icon*,
+       trackedConditionsExtra[], trackedBuffsExtra[],
+       tts { enabled, party, squad, ... voiceTokenId,
+             outputTokenId, volume, rate },
+       mechanicsAnnounce, raidMechanics[], readAllDebuffs,
+       builtinMechanicTts {}, builtinMechanicIcon {},
+       foodUtilityExpiry, readyCheckTts, allyDownedEnabled,
+       allyDownedSquadOnly, tofusToggle
+
+   LoadSettings() (line 1905):
+     Reads config.json, applies with j.value() + defaults.
+     Clamps all numeric settings to valid ranges.
+     Migrates old mechanic skill IDs to new effect IDs.
+     Merges Fixated variant toggles into canonical ID 34508.
+
+┌─ KEY FILES ──────────────────────────────────────────────────────────────┐
+
+   src/addon.cpp           — ENTIRE addon logic (~4368 lines)
+   src/addon.h             — AddonLoad/AddonUnload declarations
+   src/dllmain.cpp         — Empty DllMain
+   src/Chat.h              — Chat event structures
+   src/arcdpsheader.h      — ArcDPS integration structures
+   src/unofficial_extras.h — Unofficial Extras squad types
+   src/mumbleheader.h      — MumbleLink data structures
+   src/boon_ignore.h       — Condition ID whitelist for Read All Debuffs
+   src/buff_names.h        — ~100+ buff/effect name mappings
+   src/tts_messages.h      — Built-in action TTS messages (4 entries)
+   src/embedded_icons.h    — PNG byte arrays for 9 raid mechanic icons
+   src/reffect_pack.h      — Embedded Reffect pack JSON
+   GW2Accessibility.json   — Source of truth for Reffect pack
+   tts_helper.sh           — Linux TTS daemon (espeak-ng/Piper)
+   TTS_SETUP.md            — Linux TTS setup guide
+   AGENTS.md               — Build/deploy project rules
+   CMakeLists.txt          — Build configuration
+   toolchain-mingw.cmake   — MinGW cross-compile toolchain
+
+┌─ COMMON TASKS ───────────────────────────────────────────────────────────┐
+
+   Add a new setting:
+     1. Add variable at top of addon.cpp in the relevant section
+     2. Save it in SaveSettings(), load it in LoadSettings()
+     3. Add UI control in OnOptionsRender()
+
+   Update the Reffect pack:
+     1. Edit GW2Accessibility.json
+     2. Bump "packVersion" by 1
+     3. Re-embed: run the one-liner in AGENTS.md
+     4. Rebuild
+
+   Build & deploy:
+     cmake -B build -DCMAKE_BUILD_TYPE=Release
+         "-DCMAKE_TOOLCHAIN_FILE=toolchain-mingw.cmake"
+     cmake --build build --config Release
+     Copy build/GW2Accessibility.dll to <Nexus>/addons/GW2Accessibility/
+
+   Fix Linux TTS:
+     - Ensure tts_helper.sh is running (ps aux | grep tts_helper)
+     - Check pipe exists (ls -la ~/.gw2-tts-pipe)
+     - Test manually: echo "hello" > ~/.gw2-tts-pipe
+     - Configure voice in ~/.gw2-tts-config
+     - See TTS_SETUP.md for detailed setup
+
+   Debug logging:
+     All TTS operations log via g_API->Log(LOGL_INFO, "GW2Accessibility", ...)
+     Look for [TTS] prefix in Nexus log output.
