@@ -1,5 +1,6 @@
 {
   "schema": "v1",
+  "packVersion": 1,
   "enabled": true,
   "name": "GW2Accessibility",
   "anchor": {
@@ -2203,11 +2204,11 @@
               "type": "Buff",
               "combatant": "Player",
               "ids": [
-                17825
+                46587
               ]
             },
             "threshold": {
-              "threshold_type": "Missing",
+              "threshold_type": "Present",
               "amount_type": "Intensity"
             }
           },
@@ -2289,11 +2290,11 @@
               "type": "Buff",
               "combatant": "Player",
               "ids": [
-                17825
+                46587
               ]
             },
             "threshold": {
-              "threshold_type": "Missing",
+              "threshold_type": "Present",
               "amount_type": "Intensity"
             }
           },
@@ -2360,11 +2361,11 @@
               "type": "Buff",
               "combatant": "Player",
               "ids": [
-                17825
+                46668
               ]
             },
             "threshold": {
-              "threshold_type": "Missing",
+              "threshold_type": "Present",
               "amount_type": "Intensity"
             }
           },
@@ -2446,11 +2447,11 @@
               "type": "Buff",
               "combatant": "Player",
               "ids": [
-                9963
+                46668
               ]
             },
             "threshold": {
-              "threshold_type": "Missing",
+              "threshold_type": "Present",
               "amount_type": "Intensity"
             }
           },

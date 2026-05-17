@@ -305,6 +305,7 @@ static std::string g_TtsOutputTokenId;  // persisted: full HKEY_... path; empty 
 static int   g_TtsVoiceIdx   = 0;
 static int   g_TtsOutputIdx  = 0;
 static int   g_TtsVolume     = 100;    // SAPI volume 0-100
+static int   g_TtsRate       = 0;      // SAPI rate -10 to 10
 
 // Squad state tracking
 static bool g_InSquad = false;
@@ -635,6 +636,37 @@ static std::string GetReffectPacksDir()
     return path.substr(0, pos) + "\\addons\\reffect\\packs\\";
 }
 
+// Read packVersion from a Reffect JSON file. Returns 0 if absent or unparseable.
+static int ReadPackVersion(const std::string& filepath)
+{
+    std::ifstream f(filepath, std::ios::binary);
+    if (!f.is_open()) return 0;
+    try
+    {
+        nlohmann::json j;
+        f >> j;
+        return j.value("packVersion", 0);
+    }
+    catch (...)
+    {
+        return 0;
+    }
+}
+
+// Get packVersion from the embedded JSON.
+static int GetEmbeddedPackVersion()
+{
+    try
+    {
+        auto j = nlohmann::json::parse(g_ReffectPackJson);
+        return j.value("packVersion", 0);
+    }
+    catch (...)
+    {
+        return 0;
+    }
+}
+
 static void DeployReffectPack()
 {
     std::string dir = GetReffectPacksDir();
@@ -643,14 +675,27 @@ static void DeployReffectPack()
     std::filesystem::create_directories(dir);
     std::string filepath = dir + "GW2Accessibility.json";
 
-    if (std::filesystem::exists(filepath)) return;
+    int embeddedVer = GetEmbeddedPackVersion();
+    char buf[256];
+
+    if (std::filesystem::exists(filepath))
+    {
+        int onDiskVer = ReadPackVersion(filepath);
+        if (onDiskVer >= embeddedVer)
+        {
+            snprintf(buf, sizeof(buf), "[REFFECT] Pack up-to-date (version %d), skipping deploy", onDiskVer);
+            g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
+            return;
+        }
+        snprintf(buf, sizeof(buf), "[REFFECT] Upgrading pack %d -> %d", onDiskVer, embeddedVer);
+        g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
+    }
 
     std::ofstream file(filepath, std::ios::binary);
     if (file.is_open())
     {
         file << g_ReffectPackJson;
-        char buf[256];
-        snprintf(buf, sizeof(buf), "[REFFECT] Deployed pack to %s", filepath.c_str());
+        snprintf(buf, sizeof(buf), "[REFFECT] Deployed pack v%d to %s", embeddedVer, filepath.c_str());
         g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
     }
 }
@@ -1863,6 +1908,7 @@ static void SaveSettings()
     tts["voiceTokenId"]  = g_TtsVoiceTokenId;
     tts["outputTokenId"] = g_TtsOutputTokenId;
     tts["volume"]        = g_TtsVolume;
+    tts["rate"]          = g_TtsRate;
     j["tts"] = tts;
 
     j["mechanicsAnnounce"] = g_MechanicsAnnounceEnabled;
@@ -2015,6 +2061,8 @@ static void LoadSettings()
             g_TtsOutputTokenId   = tts.value("outputTokenId", "");
             g_TtsVolume          = tts.value("volume", 100);
             g_TtsVolume          = std::clamp(g_TtsVolume, 0, 100);
+            g_TtsRate            = tts.value("rate", 0);
+            g_TtsRate            = std::clamp(g_TtsRate, -10, 10);
         }
 
         g_MechanicsAnnounceEnabled = j.value("mechanicsAnnounce", false);
@@ -2228,38 +2276,25 @@ static void EnumerateTtsVoices()
         if (g_TtsVoices[i].tokenId == g_TtsVoiceTokenId) { g_TtsVoiceIdx = i; break; }
 }
 
-// Populate g_TtsOutputDevices from HKCU SAPI audio output token registry.
+// Populate g_TtsOutputDevices using waveOutGetDevCaps (avoids SAPI HKCU token issues).
 static void EnumerateTtsOutputDevices()
 {
     g_TtsOutputDevices.clear();
     g_TtsOutputDevices.push_back({"Default (System)", ""});
 
-    HKEY hCat = nullptr;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER,
-            L"Software\\Microsoft\\Speech\\AudioOutput\\TokenEnums\\MMAudioOut",
-            0, KEY_READ, &hCat) == ERROR_SUCCESS)
+    UINT numDevs = waveOutGetNumDevs();
+    for (UINT i = 0; i < numDevs; i++)
     {
-        DWORD idx = 0;
-        wchar_t skName[512]; DWORD skLen = 512;
-        while (RegEnumKeyExW(hCat, idx++, skName, &skLen, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS)
+        WAVEOUTCAPSW caps = {};
+        if (waveOutGetDevCapsW(i, &caps, sizeof(caps)) == MMSYSERR_NOERROR)
         {
-            skLen = 512;
-            HKEY hDev = nullptr;
-            if (RegOpenKeyExW(hCat, skName, 0, KEY_READ, &hDev) == ERROR_SUCCESS)
-            {
-                wchar_t dispName[512] = {}; DWORD cbName = sizeof(dispName);
-                RegQueryValueExW(hDev, nullptr, nullptr, nullptr, reinterpret_cast<LPBYTE>(dispName), &cbName);
-                RegCloseKey(hDev);
-                std::string display = WideToUtf8(dispName);
-                if (display.empty()) display = WideToUtf8(skName);
-                std::string tokenId =
-                    "HKEY_CURRENT_USER\\Software\\Microsoft\\Speech\\AudioOutput\\TokenEnums\\MMAudioOut\\"
-                    + WideToUtf8(skName);
-                g_TtsOutputDevices.push_back({display, tokenId});
-            }
+            std::string name = WideToUtf8(caps.szPname);
+            if (name.empty())
+                name = "Audio Output " + std::to_string(i);
+            g_TtsOutputDevices.push_back({name, std::to_string(i)});
         }
-        RegCloseKey(hCat);
     }
+
     g_TtsOutputIdx = 0;
     for (int i = 0; i < static_cast<int>(g_TtsOutputDevices.size()); i++)
         if (g_TtsOutputDevices[i].tokenId == g_TtsOutputTokenId) { g_TtsOutputIdx = i; break; }
@@ -2318,26 +2353,42 @@ static void InitSAPI()
             }
         }
 
-        // Apply user-selected output device.
-        if (!g_TtsOutputTokenId.empty())
+        // Apply user-selected output device via ISpMMSysAudio::SetDeviceId
+        // (avoids HKCU token + SetId approach which fails with 0x8004503A).
         {
-            std::wstring wOutId = Utf8ToWide(g_TtsOutputTokenId.c_str());
-            ISpObjectToken* pOutToken = nullptr;
-            HRESULT hrOut = CoCreateInstance(CLSID_SpObjectToken, nullptr, CLSCTX_ALL,
-                                             IID_ISpObjectToken, (void**)&pOutToken);
-            if (SUCCEEDED(hrOut) && pOutToken)
+            ISpMMSysAudio* pMMAudio = nullptr;
+            HRESULT hrOut = CoCreateInstance(CLSID_SpMMAudioOut, nullptr, CLSCTX_ALL,
+                                             IID_ISpMMSysAudio, (void**)&pMMAudio);
+            if (SUCCEEDED(hrOut) && pMMAudio)
             {
-                hrOut = pOutToken->SetId(nullptr, wOutId.c_str(), FALSE);
-                if (SUCCEEDED(hrOut))
+                if (!g_TtsOutputTokenId.empty())
                 {
-                    HRESULT hrSO = g_pVoice->SetOutput(pOutToken, FALSE);
-                    snprintf(buf, sizeof(buf), "[TTS] SetOutput(%s) = 0x%08lX (%s)",
-                        g_TtsOutputTokenId.c_str(), (unsigned long)hrSO, SUCCEEDED(hrSO) ? "OK" : "FAILED");
+                    int waveIdx = std::atoi(g_TtsOutputTokenId.c_str());
+                    hrOut = pMMAudio->SetDeviceId(static_cast<UINT>(waveIdx));
+                    if (FAILED(hrOut))
+                        snprintf(buf, sizeof(buf), "[TTS] SetDeviceId(%d) failed: 0x%08lX", waveIdx, (unsigned long)hrOut);
+                    else
+                        snprintf(buf, sizeof(buf), "[TTS] SetDeviceId(%d) = OK", waveIdx);
                 }
                 else
-                    snprintf(buf, sizeof(buf), "[TTS] output token SetId failed: 0x%08lX", (unsigned long)hrOut);
+                {
+                    // Default device — WAVE_MAPPER.
+                    snprintf(buf, sizeof(buf), "[TTS] using default device (WAVE_MAPPER)");
+                }
                 g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
-                pOutToken->Release();
+
+                HRESULT hrSO = g_pVoice->SetOutput(pMMAudio, FALSE);
+                if (FAILED(hrSO))
+                {
+                    snprintf(buf, sizeof(buf), "[TTS] SetOutput(ISpMMSysAudio) failed: 0x%08lX", (unsigned long)hrSO);
+                    g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
+                }
+                pMMAudio->Release();
+            }
+            else
+            {
+                snprintf(buf, sizeof(buf), "[TTS] CoCreateInstance(CLSID_SpMMAudioOut) failed: 0x%08lX", (unsigned long)hrOut);
+                g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
             }
         }
 
@@ -2360,6 +2411,7 @@ static void InitSAPI()
         }
 
         g_pVoice->SetVolume(static_cast<USHORT>(g_TtsVolume));
+        g_pVoice->SetRate(std::clamp(g_TtsRate, -10, 10));
         g_API->Log(LOGL_INFO, "GW2Accessibility", "[TTS] SAPI voice initialized successfully");
     }
     else if (g_IsWine)
@@ -2458,7 +2510,8 @@ static void OnCombatEvent(void* aEventArgs)
     if (cbt->ev->IsStatechange == 5) // CBTS_CHANGEDOWN
     {
         if (!g_AllyDownedEnabled) return;
-        if (g_AllyDownedSquadOnly && !g_InSquad) return;
+        // Squad Only: filter out the player's own downed events (you already know when you go down).
+        if (g_AllyDownedSquadOnly && cbt->src && cbt->src->IsSelf) return;
         uint64_t agentId = cbt->ev->SourceAgent;
         if (!g_DownedAgents.count(agentId))
         {
@@ -3979,6 +4032,17 @@ static void OnOptionsRender()
             {
                 g_TtsVolume = std::clamp(g_TtsVolume, 0, 100);
                 if (g_pVoice) g_pVoice->SetVolume(static_cast<USHORT>(g_TtsVolume));
+                changed = true;
+            }
+        }
+
+        // Rate (speed) slider
+        {
+            ImGui::SetNextItemWidth(300.0f);
+            if (ImGui::SliderInt("Speed##ttsrate", &g_TtsRate, -10, 10))
+            {
+                g_TtsRate = std::clamp(g_TtsRate, -10, 10);
+                if (g_pVoice) g_pVoice->SetRate(g_TtsRate);
                 changed = true;
             }
         }

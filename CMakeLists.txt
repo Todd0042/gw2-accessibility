@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(GW2Accessibility VERSION 1.0.1)
+project(GW2Accessibility VERSION 1.1.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -44,4 +44,5 @@ target_link_libraries(GW2Accessibility PRIVATE
     -lshell32
     -lole32
     -ladvapi32
+    -lwinmm
 )

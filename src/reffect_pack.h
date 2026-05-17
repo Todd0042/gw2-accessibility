@@ -4,6 +4,7 @@
 static const char g_ReffectPackJson[] = R"json(
 {
   "schema": "v1",
+  "packVersion": 1,
   "enabled": true,
   "name": "GW2Accessibility",
   "anchor": {
@@ -2207,11 +2208,11 @@ static const char g_ReffectPackJson[] = R"json(
               "type": "Buff",
               "combatant": "Player",
               "ids": [
-                17825
+                46587
               ]
             },
             "threshold": {
-              "threshold_type": "Missing",
+              "threshold_type": "Present",
               "amount_type": "Intensity"
             }
           },
@@ -2293,11 +2294,11 @@ static const char g_ReffectPackJson[] = R"json(
               "type": "Buff",
               "combatant": "Player",
               "ids": [
-                17825
+                46587
               ]
             },
             "threshold": {
-              "threshold_type": "Missing",
+              "threshold_type": "Present",
               "amount_type": "Intensity"
             }
           },
@@ -2364,11 +2365,11 @@ static const char g_ReffectPackJson[] = R"json(
               "type": "Buff",
               "combatant": "Player",
               "ids": [
-                17825
+                46668
               ]
             },
             "threshold": {
-              "threshold_type": "Missing",
+              "threshold_type": "Present",
               "amount_type": "Intensity"
             }
           },
@@ -2450,11 +2451,11 @@ static const char g_ReffectPackJson[] = R"json(
               "type": "Buff",
               "combatant": "Player",
               "ids": [
-                9963
+                46668
               ]
             },
             "threshold": {
-              "threshold_type": "Missing",
+              "threshold_type": "Present",
               "amount_type": "Intensity"
             }
           },
