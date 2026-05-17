@@ -1,4 +1,10 @@
 build/CMakeFiles/
+build/CMakeCache.txt
+build/build.ninja
+build/.ninja_deps
+build/.ninja_log
+build/cmake_install.cmake
+build/*.zip
 *.dll
 *.dll.a
 .vs/
@@ -6,5 +12,9 @@ build/CMakeFiles/
 *.suo
 .DS_Store
 Thumbs.db
-references/BuildCoach/
-.claude/settings.local.json
+references/
+.claude/
+AGENTS.md
+Lessons_Learned
+suggestions.txt
+Buffs.json
