@@ -2402,21 +2402,21 @@ static void OnCombatEvent(void* aEventArgs)
 
     if (cbt->ev->IsStatechange != 0)
     {
-        char scbuf[256];
-        snprintf(scbuf, sizeof(scbuf), "[COMBAT] IsStatechange=%u Buff=1 skill=%u name=\"%s\" dst_self=%d — ignored",
-            (unsigned)cbt->ev->IsStatechange,
-            (unsigned)cbt->ev->SkillID,
-            cbt->skillname ? cbt->skillname : "(null)",
-            cbt->dst ? (int)cbt->dst->IsSelf : -1);
-        g_API->Log(LOGL_DEBUG, "GW2Accessibility", scbuf);
-        return;
+        // IsStatechange=72 is the buff-apply event type in current arcdps versions
+        // (arcdps stopped using IsStatechange=0 for buff applies). Fall through to
+        // normal buff processing instead of returning.
+        if (cbt->ev->IsStatechange != 72)
+        {
+            g_API->Log(LOGL_DEBUG, "GW2Accessibility", "ignored non-buff statechange");
+            return;
+        }
     }
 
     unsigned int skillID = NormalizeMechanicID(cbt->ev->SkillID);
     bool isRemove = (cbt->ev->IsBuffRemove != 0);
     DWORD now = GetTickCount();
 
-    bool isOnSelf = (cbt->dst && cbt->dst->IsSelf == 1);
+    bool isOnSelf = (cbt->dst && cbt->dst->IsSelf == 1) || (cbt->src && cbt->src->IsSelf == 1);
 
     {
         char buf[512];
@@ -2486,8 +2486,12 @@ static void OnCombatEvent(void* aEventArgs)
         }
     }
 
-    // ── TTS filters (dst must be self, skip in WvW) ─────────────────────────
-    if (!cbt->dst || cbt->dst->IsSelf != 1)
+    // ── TTS filters (dst or src must be self, skip in WvW) ──────────────────
+    // In newer arcdps (IsStatechange=72 events), the receiving agent may be in
+    // src rather than dst. Accept either.
+    bool dstSelf = cbt->dst && cbt->dst->IsSelf == 1;
+    bool srcSelf = cbt->src && cbt->src->IsSelf == 1;
+    if (!dstSelf && !srcSelf)
     {
         return;
     }
@@ -3926,22 +3930,6 @@ static void OnOptionsRender()
         }
 
         ImGui::Dummy(ImVec2(0, 8));
-        ImGui::TextUnformatted("Keybind Overlay");
-        ImGui::Separator();
-
-        changed |= ImGui::Checkbox("Show Keybind Overlay", &g_KeybindOverlayEnabled);
-        if (g_KeybindOverlayEnabled)
-        {
-            ImGui::Indent();
-            const char* visNames[] = { "Always", "In Combat Only", "Out of Combat Only" };
-            changed |= ImGui::Combo("Visibility", &g_KeybindVisibility, visNames, 3);
-            ImGui::Unindent();
-        }
-        if (ImGui::Button("Configure Keybinds..."))
-            g_ShowKeybindConfig = true;
-        ImGui::TextDisabled("Select an exported keybind file from Documents\\Guild Wars 2\\InputBinds\\");
-
-        ImGui::Dummy(ImVec2(0, 8));
         ImGui::TextDisabled("For more visual accessibility features install");
         ImGui::TextDisabled("Reffect from the link below.");
         ImGui::Dummy(ImVec2(0, 4));
@@ -3969,6 +3957,29 @@ static void OnOptionsRender()
             }
         }
         ImGui::TextDisabled("Writes GW2Accessibility.json to the Reffect packs folder.");
+
+        ImGui::Unindent();
+        ImGui::Dummy(ImVec2(0, 4));
+    }
+
+    if (ImGui::CollapsingHeader("Cognitive"))
+    {
+        ImGui::Indent();
+
+        ImGui::TextUnformatted("Keybind Overlay");
+        ImGui::Separator();
+
+        changed |= ImGui::Checkbox("Show Keybind Overlay", &g_KeybindOverlayEnabled);
+        if (g_KeybindOverlayEnabled)
+        {
+            ImGui::Indent();
+            const char* visNames[] = { "Always", "In Combat Only", "Out of Combat Only" };
+            changed |= ImGui::Combo("Visibility", &g_KeybindVisibility, visNames, 3);
+            ImGui::Unindent();
+        }
+        if (ImGui::Button("Configure Keybinds..."))
+            g_ShowKeybindConfig = true;
+        ImGui::TextDisabled("Select an exported keybind file from Documents\\Guild Wars 2\\InputBinds\\");
 
         ImGui::Unindent();
         ImGui::Dummy(ImVec2(0, 4));
@@ -4111,14 +4122,14 @@ void AddonUnload()
 
 extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef()
 {
-    static AddonVersion_t s_Version = { 0, 2, 2, 0 };
+    static AddonVersion_t s_Version = { 0, 1, 0, 0 };
 
     static AddonDefinition_t s_Def = {};
     s_Def.Signature  = -2;
     s_Def.APIVersion = NEXUS_API_VERSION;
     s_Def.Name       = "GW2Accessibility";
     s_Def.Version    = s_Version;
-    s_Def.Author     = "Todd0042";
+    s_Def.Author     = "Todd.0042";
     s_Def.Description= "Accessibility features for Guild Wars 2";
     s_Def.Load       = AddonLoad;
     s_Def.Unload     = AddonUnload;
