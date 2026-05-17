@@ -4129,7 +4129,7 @@ extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef()
     s_Def.APIVersion = NEXUS_API_VERSION;
     s_Def.Name       = "GW2Accessibility";
     s_Def.Version    = s_Version;
-    s_Def.Author     = "Todd.0042";
+    s_Def.Author     = "Todd0042";
     s_Def.Description= "Accessibility features for Guild Wars 2";
     s_Def.Load       = AddonLoad;
     s_Def.Unload     = AddonUnload;
