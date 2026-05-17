@@ -2206,61 +2206,113 @@ static void InitSAPI()
             regOpen, regOpen == ERROR_SUCCESS ? "OK" : "FAILED");
         g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
 
-        if (regOpen == ERROR_SUCCESS)
+        // Helper lambda: given a token ID string, create a SpObjectToken, set its ID,
+        // and apply it as the active SAPI voice. Returns true on full success.
+        bool voiceApplied = false;
+        auto TryApplyToken = [&](const wchar_t* tokenId, const wchar_t* category) -> bool
         {
-            wchar_t tokenId[1024] = {};
-            DWORD cbSize = sizeof(tokenId);
-            DWORD dwType = REG_SZ;
-            LONG regQuery = RegQueryValueExW(hKey, L"CurrentToken", nullptr, &dwType,
-                                             reinterpret_cast<LPBYTE>(tokenId), &cbSize);
-            snprintf(buf, sizeof(buf), "[TTS] RegQueryValue(CurrentToken) = %ld (%s)",
-                regQuery, regQuery == ERROR_SUCCESS ? "OK" : "FAILED");
+            char tokenUtf8[1024] = {};
+            WideCharToMultiByte(CP_UTF8, 0, tokenId, -1, tokenUtf8, sizeof(tokenUtf8), nullptr, nullptr);
+            char catUtf8[512] = {};
+            WideCharToMultiByte(CP_UTF8, 0, category ? category : L"(null)", -1, catUtf8, sizeof(catUtf8), nullptr, nullptr);
+            snprintf(buf, sizeof(buf), "[TTS] TryApplyToken: id=\"%s\" category=\"%s\"", tokenUtf8, catUtf8);
             g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
 
-            if (regQuery == ERROR_SUCCESS && tokenId[0] != L'\0')
+            ISpObjectToken* pToken = nullptr;
+            HRESULT hr2 = CoCreateInstance(kCLSID_SpObjectToken, nullptr, CLSCTX_ALL,
+                                           kIID_ISpObjectToken, (void**)&pToken);
+            snprintf(buf, sizeof(buf), "[TTS]   CoCreateInstance(SpObjectToken) = 0x%08lX (%s)",
+                (unsigned long)hr2, SUCCEEDED(hr2) ? "OK" : "FAILED");
+            g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
+            if (FAILED(hr2) || !pToken) return false;
+
+            HRESULT hrSetId = pToken->SetId(category, tokenId, FALSE);
+            snprintf(buf, sizeof(buf), "[TTS]   SetId() = 0x%08lX (%s)",
+                (unsigned long)hrSetId, SUCCEEDED(hrSetId) ? "OK" : "FAILED");
+            g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
+
+            bool ok = false;
+            if (SUCCEEDED(hrSetId))
             {
-                // Log the token path so we can verify it's the right voice
-                char tokenUtf8[1024] = {};
-                WideCharToMultiByte(CP_UTF8, 0, tokenId, -1, tokenUtf8, sizeof(tokenUtf8), nullptr, nullptr);
-                snprintf(buf, sizeof(buf), "[TTS] CurrentToken = \"%s\"", tokenUtf8);
+                HRESULT hrSetVoice = g_pVoice->SetVoice(pToken);
+                snprintf(buf, sizeof(buf), "[TTS]   SetVoice() = 0x%08lX (%s)",
+                    (unsigned long)hrSetVoice, SUCCEEDED(hrSetVoice) ? "OK" : "FAILED");
                 g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
-
-                ISpObjectToken* pToken = nullptr;
-                HRESULT hr2 = CoCreateInstance(kCLSID_SpObjectToken, nullptr, CLSCTX_ALL,
-                                               kIID_ISpObjectToken, (void**)&pToken);
-                snprintf(buf, sizeof(buf), "[TTS] CoCreateInstance(SpObjectToken) = 0x%08lX (%s)",
-                    (unsigned long)hr2, SUCCEEDED(hr2) ? "OK" : "FAILED");
-                g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
-
-                if (SUCCEEDED(hr2) && pToken)
-                {
-                    // Pass the OneCore voices category so SAPI can locate the token correctly
-                    HRESULT hrSetId = pToken->SetId(
-                        L"HKLM\\SOFTWARE\\Microsoft\\Speech_OneCore\\Voices",
-                        tokenId, FALSE);
-                    snprintf(buf, sizeof(buf), "[TTS] pToken->SetId() = 0x%08lX (%s)",
-                        (unsigned long)hrSetId, SUCCEEDED(hrSetId) ? "OK" : "FAILED");
-                    g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
-
-                    if (SUCCEEDED(hrSetId))
-                    {
-                        HRESULT hrSetVoice = g_pVoice->SetVoice(pToken);
-                        snprintf(buf, sizeof(buf), "[TTS] g_pVoice->SetVoice() = 0x%08lX (%s)",
-                            (unsigned long)hrSetVoice, SUCCEEDED(hrSetVoice) ? "OK" : "FAILED");
-                        g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
-                    }
-                    pToken->Release();
-                }
+                ok = SUCCEEDED(hrSetVoice);
             }
-            else if (regQuery == ERROR_SUCCESS && tokenId[0] == L'\0')
-            {
-                g_API->Log(LOGL_INFO, "GW2Accessibility", "[TTS] CurrentToken key exists but value is empty — using default SAPI voice");
-            }
-            RegCloseKey(hKey);
-        }
-        else
+            pToken->Release();
+            return ok;
+        };
+
+        // Read a string value from an open registry key; returns true and fills tokenId on success.
+        auto ReadRegStr = [&](HKEY key, const wchar_t* valueName, wchar_t* out, DWORD outBytes) -> bool
         {
-            g_API->Log(LOGL_INFO, "GW2Accessibility", "[TTS] Speech_OneCore registry key not found — using default SAPI voice");
+            DWORD cbSize = outBytes;
+            DWORD dwType = REG_SZ;
+            out[0] = L'\0';
+            LONG r = RegQueryValueExW(key, valueName, nullptr, &dwType,
+                                      reinterpret_cast<LPBYTE>(out), &cbSize);
+            char vn[256];
+            WideCharToMultiByte(CP_UTF8, 0, valueName, -1, vn, sizeof(vn), nullptr, nullptr);
+            snprintf(buf, sizeof(buf), "[TTS] RegQueryValue(\"%s\") = %ld (%s)", vn, r, r == 0 ? "OK" : "FAILED");
+            g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
+            return r == ERROR_SUCCESS && out[0] != L'\0';
+        };
+
+        // Try the registry paths Windows uses for the voice selected in Settings.
+        // Windows 10/11 Settings writes to Speech_OneCore; the legacy Control Panel uses Speech.
+        // Value names seen in the wild: "DefaultTokenId" (most common) and "CurrentToken".
+        struct { const wchar_t* regPath; const wchar_t* valueName; const wchar_t* sapiCategory; } attempts[] = {
+            { L"Software\\Microsoft\\Speech_OneCore\\CurrentUserData", L"DefaultTokenId",
+              L"HKLM\\SOFTWARE\\Microsoft\\Speech_OneCore\\Voices" },
+            { L"Software\\Microsoft\\Speech_OneCore\\CurrentUserData", L"CurrentToken",
+              L"HKLM\\SOFTWARE\\Microsoft\\Speech_OneCore\\Voices" },
+            { L"Software\\Microsoft\\Speech\\CurrentUserData",         L"DefaultTokenId",
+              L"HKLM\\SOFTWARE\\Microsoft\\Speech\\Voices" },
+            { L"Software\\Microsoft\\Speech\\CurrentUserData",         L"CurrentToken",
+              L"HKLM\\SOFTWARE\\Microsoft\\Speech\\Voices" },
+        };
+
+        for (auto& a : attempts)
+        {
+            if (voiceApplied) break;
+            char pathUtf8[512] = {};
+            WideCharToMultiByte(CP_UTF8, 0, a.regPath, -1, pathUtf8, sizeof(pathUtf8), nullptr, nullptr);
+            snprintf(buf, sizeof(buf), "[TTS] Trying registry path: HKCU\\%s", pathUtf8);
+            g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
+
+            HKEY hKey2 = nullptr;
+            LONG r = RegOpenKeyExW(HKEY_CURRENT_USER, a.regPath, 0, KEY_READ, &hKey2);
+            snprintf(buf, sizeof(buf), "[TTS]   RegOpenKey = %ld (%s)", r, r == 0 ? "OK" : "FAILED");
+            g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
+            if (r != ERROR_SUCCESS) continue;
+
+            wchar_t tokenId[1024] = {};
+            if (ReadRegStr(hKey2, a.valueName, tokenId, sizeof(tokenId)))
+                voiceApplied = TryApplyToken(tokenId, a.sapiCategory);
+
+            RegCloseKey(hKey2);
+        }
+
+        if (!voiceApplied)
+            g_API->Log(LOGL_INFO, "GW2Accessibility", "[TTS] No Windows Settings voice found — using default SAPI voice");
+
+        // Log the name of the voice actually in use so we can verify in the log.
+        {
+            ISpObjectToken* pCurToken = nullptr;
+            if (SUCCEEDED(g_pVoice->GetVoice(&pCurToken)) && pCurToken)
+            {
+                wchar_t* descW = nullptr;
+                if (SUCCEEDED(pCurToken->GetStringValue(nullptr, &descW)) && descW)
+                {
+                    char descUtf8[512] = {};
+                    WideCharToMultiByte(CP_UTF8, 0, descW, -1, descUtf8, sizeof(descUtf8), nullptr, nullptr);
+                    snprintf(buf, sizeof(buf), "[TTS] Active voice: \"%s\"", descUtf8);
+                    g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
+                    CoTaskMemFree(descW);
+                }
+                pCurToken->Release();
+            }
         }
 
         g_API->Log(LOGL_INFO, "GW2Accessibility", "[TTS] SAPI voice initialized successfully");
@@ -2425,6 +2477,20 @@ static void OnCombatEvent(void* aEventArgs)
         snprintf(fdbg, sizeof(fdbg), "[BUFF_DUMP] skill=%u name=\"%s\"",
             sid, cbt->skillname ? cbt->skillname : "(null)");
         g_API->Log(LOGL_INFO, "GW2Accessibility", fdbg);
+
+        // Malnourished/Diminished appearing at map load means the player entered
+        // the map without food/utility. Speak TTS immediately.
+        if (g_FoodUtilityExpiryEnabled && (sid == 46587 || sid == 46668))
+        {
+            const wchar_t* speech = (sid == 46587) ? L"Malnourished" : L"Diminished";
+            char tdbg[128];
+            snprintf(tdbg, sizeof(tdbg),
+                "[FOOD] skill=%u (%s) in BUFF_DUMP — player entered map without consumable, speaking TTS",
+                sid, (sid == 46587) ? "Malnourished" : "Diminished");
+            g_API->Log(LOGL_INFO, "GW2Accessibility", tdbg);
+            InitSAPI();
+            if (g_TtsReady) SpeakText(speech);
+        }
 
         return;
     }
