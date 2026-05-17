@@ -292,15 +292,9 @@ static std::unordered_map<unsigned int, DWORD> g_ActiveBuffs;
 static const DWORD g_ActiveBuffTimeout = 3000;
 
 // Food/utility expiry tracking
+// Detects Malnourished (46587) and Diminished (46668) being applied — these
+// are the debuffs arcdps fires when Nourishment/Enhancement wear off.
 static bool g_FoodUtilityExpiryEnabled = false;
-static bool g_HasNourishment = false;       // skill 17825 confirmed active
-static bool g_HasEnhancement = false;       // skill 9963 confirmed active
-static uint32_t g_FoodLastMapId = 0;
-static DWORD g_MapLoadSettleTick = 0;       // tick when map change detected
-static bool g_MapLoadCheckDone = false;
-static DWORD g_LastFoodReminderTick = 0;
-static const DWORD FOOD_SETTLE_MS = 5000;           // wait 5s for BUFF_INITs
-static const DWORD FOOD_REMINDER_MS = 5 * 60 * 1000; // remind every 5 min
 
 // Squad state tracking
 static bool g_InSquad = false;
@@ -2194,38 +2188,79 @@ static void InitSAPI()
 
     if (g_TtsReady)
     {
-        // CoCreateInstance(CLSID_SpVoice) uses the legacy Control Panel SAPI voice from
-        // HKCU\Software\Microsoft\Speech\CurrentUserData. Windows Settings stores its choice
-        // separately under Speech_OneCore. Try to apply that token so the user's selected
-        // voice is actually used.
+        // CoCreateInstance(CLSID_SpVoice) picks the legacy Control Panel SAPI voice from
+        // HKCU\Software\Microsoft\Speech\CurrentUserData. Windows Settings stores its selection
+        // under Speech_OneCore. Read that token and apply it so the user's chosen voice is used.
         static const GUID kCLSID_SpObjectToken =
             {0xEF411752,0x3736,0x4CB4,{0x9C,0x8C,0x8E,0xF4,0xCC,0xB5,0x8E,0xFE}};
         static const GUID kIID_ISpObjectToken =
             {0x14056581,0xE16C,0x11D2,{0xBB,0x90,0x00,0xC0,0x4F,0x8E,0xE6,0xC0}};
 
+        g_API->Log(LOGL_INFO, "GW2Accessibility", "[TTS] attempting OneCore voice selection from Windows Settings");
+
         HKEY hKey = nullptr;
-        if (RegOpenKeyExW(HKEY_CURRENT_USER,
+        LONG regOpen = RegOpenKeyExW(HKEY_CURRENT_USER,
                 L"Software\\Microsoft\\Speech_OneCore\\CurrentUserData",
-                0, KEY_READ, &hKey) == ERROR_SUCCESS)
+                0, KEY_READ, &hKey);
+        snprintf(buf, sizeof(buf), "[TTS] RegOpenKey(Speech_OneCore\\CurrentUserData) = %ld (%s)",
+            regOpen, regOpen == ERROR_SUCCESS ? "OK" : "FAILED");
+        g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
+
+        if (regOpen == ERROR_SUCCESS)
         {
             wchar_t tokenId[1024] = {};
             DWORD cbSize = sizeof(tokenId);
             DWORD dwType = REG_SZ;
-            if (RegQueryValueExW(hKey, L"CurrentToken", nullptr, &dwType,
-                                 reinterpret_cast<LPBYTE>(tokenId), &cbSize) == ERROR_SUCCESS
-                && tokenId[0] != L'\0')
+            LONG regQuery = RegQueryValueExW(hKey, L"CurrentToken", nullptr, &dwType,
+                                             reinterpret_cast<LPBYTE>(tokenId), &cbSize);
+            snprintf(buf, sizeof(buf), "[TTS] RegQueryValue(CurrentToken) = %ld (%s)",
+                regQuery, regQuery == ERROR_SUCCESS ? "OK" : "FAILED");
+            g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
+
+            if (regQuery == ERROR_SUCCESS && tokenId[0] != L'\0')
             {
+                // Log the token path so we can verify it's the right voice
+                char tokenUtf8[1024] = {};
+                WideCharToMultiByte(CP_UTF8, 0, tokenId, -1, tokenUtf8, sizeof(tokenUtf8), nullptr, nullptr);
+                snprintf(buf, sizeof(buf), "[TTS] CurrentToken = \"%s\"", tokenUtf8);
+                g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
+
                 ISpObjectToken* pToken = nullptr;
                 HRESULT hr2 = CoCreateInstance(kCLSID_SpObjectToken, nullptr, CLSCTX_ALL,
                                                kIID_ISpObjectToken, (void**)&pToken);
+                snprintf(buf, sizeof(buf), "[TTS] CoCreateInstance(SpObjectToken) = 0x%08lX (%s)",
+                    (unsigned long)hr2, SUCCEEDED(hr2) ? "OK" : "FAILED");
+                g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
+
                 if (SUCCEEDED(hr2) && pToken)
                 {
-                    if (SUCCEEDED(pToken->SetId(nullptr, tokenId, FALSE)))
-                        g_pVoice->SetVoice(pToken);
+                    // Pass the OneCore voices category so SAPI can locate the token correctly
+                    HRESULT hrSetId = pToken->SetId(
+                        L"HKLM\\SOFTWARE\\Microsoft\\Speech_OneCore\\Voices",
+                        tokenId, FALSE);
+                    snprintf(buf, sizeof(buf), "[TTS] pToken->SetId() = 0x%08lX (%s)",
+                        (unsigned long)hrSetId, SUCCEEDED(hrSetId) ? "OK" : "FAILED");
+                    g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
+
+                    if (SUCCEEDED(hrSetId))
+                    {
+                        HRESULT hrSetVoice = g_pVoice->SetVoice(pToken);
+                        snprintf(buf, sizeof(buf), "[TTS] g_pVoice->SetVoice() = 0x%08lX (%s)",
+                            (unsigned long)hrSetVoice, SUCCEEDED(hrSetVoice) ? "OK" : "FAILED");
+                        g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
+                    }
                     pToken->Release();
                 }
             }
+            else if (regQuery == ERROR_SUCCESS && tokenId[0] == L'\0')
+            {
+                g_API->Log(LOGL_INFO, "GW2Accessibility", "[TTS] CurrentToken key exists but value is empty — using default SAPI voice");
+            }
             RegCloseKey(hKey);
+        }
+        else
+        {
+            g_API->Log(LOGL_INFO, "GW2Accessibility", "[TTS] Speech_OneCore registry key not found — using default SAPI voice");
         }
 
         g_API->Log(LOGL_INFO, "GW2Accessibility", "[TTS] SAPI voice initialized successfully");
@@ -2391,12 +2426,6 @@ static void OnCombatEvent(void* aEventArgs)
             sid, cbt->skillname ? cbt->skillname : "(null)");
         g_API->Log(LOGL_INFO, "GW2Accessibility", fdbg);
 
-        if (g_FoodUtilityExpiryEnabled)
-        {
-            if (sid == 17825) g_HasNourishment = true;
-            if (sid == 9963)  g_HasEnhancement = true;
-        }
-
         return;
     }
 
@@ -2420,9 +2449,10 @@ static void OnCombatEvent(void* aEventArgs)
 
     {
         char buf[512];
-        snprintf(buf, sizeof(buf), "[COMBAT] event skill=%u Buff=%u IsStatechange=%u isRemove=%u IsBuffRemove=%u dst->IsSelf=%u skillname=%s",
-            skillID, (unsigned)cbt->ev->Buff, (unsigned)cbt->ev->IsStatechange, isRemove, (unsigned)cbt->ev->IsBuffRemove,
+        snprintf(buf, sizeof(buf), "[COMBAT] skill=%u Buff=%u SC=%u remove=%u dst.self=%u src.self=%u name=%s",
+            skillID, (unsigned)cbt->ev->Buff, (unsigned)cbt->ev->IsStatechange, isRemove,
             cbt->dst ? (unsigned)cbt->dst->IsSelf : 99,
+            cbt->src ? (unsigned)cbt->src->IsSelf : 99,
             cbt->skillname ? cbt->skillname : "(null)");
         g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
     }
@@ -2528,24 +2558,22 @@ static void OnCombatEvent(void* aEventArgs)
         }
     }
 
-    // ── Food/Utility expiry tracking ─────────────────────────────────────────
-    if (g_FoodUtilityExpiryEnabled && (skillID == 17825 || skillID == 9963))
+    // ── Food/Utility expiry detection ────────────────────────────────────────
+    // arcdps applies Malnourished (46587) when Nourishment expires and
+    // Diminished (46668) when Enhancement expires. Detect these being APPLIED
+    // on self and speak TTS immediately. We do NOT track 17825/9963 removes —
+    // arcdps does not reliably fire remove events for natural food expiry.
+    if (g_FoodUtilityExpiryEnabled && !isRemove && (skillID == 46587 || skillID == 46668))
     {
-        bool& hasIt   = (skillID == 17825) ? g_HasNourishment : g_HasEnhancement;
-        const wchar_t* speech = (skillID == 17825) ? L"Malnourished" : L"Diminished";
-        if (isRemove)
-        {
-            if (hasIt)
-            {
-                hasIt = false;
-                InitSAPI();
-                if (g_TtsReady) SpeakText(speech);
-            }
-        }
-        else
-        {
-            hasIt = true;
-        }
+        const wchar_t* speech = (skillID == 46587) ? L"Malnourished" : L"Diminished";
+        char fdbg[256];
+        snprintf(fdbg, sizeof(fdbg),
+            "[FOOD] skill=%u (%s) applied on self (dstSelf=%d srcSelf=%d) — speaking TTS",
+            skillID, (skillID == 46587) ? "Malnourished" : "Diminished",
+            (int)dstSelf, (int)srcSelf);
+        g_API->Log(LOGL_INFO, "GW2Accessibility", fdbg);
+        InitSAPI();
+        if (g_TtsReady) SpeakText(speech);
     }
 
     // ── Necrosis special handling ──────────────────────────────────────────
@@ -3001,42 +3029,6 @@ static void SetupImGui()
 static void OnRender()
 {
     SetupImGui();
-
-    // ── Food/utility map-load and periodic check ─────────────────────────────
-    if (g_FoodUtilityExpiryEnabled && g_MumbleData)
-    {
-        DWORD now = GetTickCount();
-        uint32_t mapId = g_MumbleData->Context.MapID;
-
-        if (mapId != 0 && mapId != g_FoodLastMapId)
-        {
-            g_FoodLastMapId = mapId;
-            g_HasNourishment = false;
-            g_HasEnhancement = false;
-            g_MapLoadSettleTick = now;
-            g_MapLoadCheckDone = false;
-        }
-
-        // After settle time: announce whichever consumables are missing
-        if (!g_MapLoadCheckDone && g_MapLoadSettleTick != 0 &&
-            now - g_MapLoadSettleTick >= FOOD_SETTLE_MS)
-        {
-            g_MapLoadCheckDone = true;
-            g_LastFoodReminderTick = now;
-            InitSAPI();
-            if (!g_HasNourishment && g_TtsReady) SpeakText(L"Malnourished");
-            if (!g_HasEnhancement && g_TtsReady) SpeakText(L"Diminished");
-        }
-
-        // Periodic reminder every 5 minutes if still missing
-        if (g_MapLoadCheckDone && now - g_LastFoodReminderTick >= FOOD_REMINDER_MS)
-        {
-            g_LastFoodReminderTick = now;
-            InitSAPI();
-            if (!g_HasNourishment && g_TtsReady) SpeakText(L"Malnourished");
-            if (!g_HasEnhancement && g_TtsReady) SpeakText(L"Diminished");
-        }
-    }
 
     // Staggered pre-fetch: start 30s after load, fetch one icon every 5s
     if (!g_PrefetchStarted && g_LoadTime != 0 && GetTickCount() - g_LoadTime >= 30000)
