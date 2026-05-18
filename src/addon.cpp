@@ -4021,25 +4021,6 @@ static void OnKeybindConfigRender()
         }
     }
 
-    // ── Position ─────────────────────────────────────────────────────────────
-    ImGui::Dummy(ImVec2(0, 6));
-    ImGui::TextUnformatted("Position");
-    ImGui::Separator();
-    {
-        int anchorIdx = static_cast<int>(g_KeybindPosition.anchor);
-        if (ImGui::Combo("Anchor##kb", &anchorIdx, g_AnchorNames,
-                         static_cast<int>(AnchorPoint::COUNT)))
-        {
-            g_KeybindPosition.anchor = static_cast<AnchorPoint>(anchorIdx);
-            changed = true;
-        }
-        changed |= ImGui::SliderFloat("Offset X%##kb", &g_KeybindPosition.offsetXPct,
-                                      -50.0f, 50.0f, "%.1f%%");
-        changed |= ImGui::SliderFloat("Offset Y%##kb", &g_KeybindPosition.offsetYPct,
-                                      -50.0f, 50.0f, "%.1f%%");
-        changed |= ImGui::SliderFloat("Opacity##kb", &g_KeybindOverlayOpacity, 0.1f, 1.0f, "%.2f");
-    }
-
     // ── Sections ─────────────────────────────────────────────────────────────
     ImGui::Dummy(ImVec2(0, 6));
     ImGui::TextUnformatted("Sections to Display");
@@ -4440,12 +4421,32 @@ static void OnOptionsRender()
         {
             ImGui::Indent();
             const char* visNames[] = { "Always", "In Combat Only", "Out of Combat Only" };
-            changed |= ImGui::Combo("Visibility", &g_KeybindVisibility, visNames, 3);
+            changed |= ImGui::Combo("Visibility##kbvis", &g_KeybindVisibility, visNames, 3);
             ImGui::Unindent();
         }
-        if (ImGui::Button("Configure Keybinds..."))
+
+        ImGui::Dummy(ImVec2(0, 4));
+        ImGui::TextUnformatted("Position & Appearance");
+        ImGui::Separator();
+        ImGui::Indent();
+
+        int anchorIdx = static_cast<int>(g_KeybindPosition.anchor);
+        if (ImGui::Combo("Anchor##kbmain", &anchorIdx, g_AnchorNames,
+                         static_cast<int>(AnchorPoint::COUNT)))
+        {
+            g_KeybindPosition.anchor = static_cast<AnchorPoint>(anchorIdx);
+            changed = true;
+        }
+        changed |= ImGui::SliderFloat("Offset X%##kbmain", &g_KeybindPosition.offsetXPct, -50.0f, 50.0f, "%.1f");
+        changed |= ImGui::SliderFloat("Offset Y%##kbmain", &g_KeybindPosition.offsetYPct, -50.0f, 50.0f, "%.1f");
+        changed |= ImGui::SliderFloat("Opacity##kbmain", &g_KeybindOverlayOpacity, 0.1f, 1.0f, "%.2f");
+
+        ImGui::Unindent();
+        ImGui::Dummy(ImVec2(0, 4));
+
+        if (ImGui::Button("Configure Categories & File..."))
             g_ShowKeybindConfig = true;
-        ImGui::TextDisabled("Select an exported keybind file from Documents\\Guild Wars 2\\InputBinds\\");
+        ImGui::TextDisabled("Select keybind file and choose which categories to show.");
 
         ImGui::Unindent();
         ImGui::Dummy(ImVec2(0, 4));
