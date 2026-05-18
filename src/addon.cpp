@@ -98,7 +98,7 @@ static bool g_KeybindShowScreenshot = false;
 static bool g_KeybindShowMap        = false;
 static bool g_KeybindShowUI         = false;
 static bool g_KeybindShowTemplates  = false;
-static ConfigPosition g_KeybindPosition = {AnchorPoint::MiddleLeft, 2.0f, 0.0f};
+static ConfigPosition g_KeybindPosition = {AnchorPoint::MiddleLeft, 0.0f, 0.0f};
 static float g_KeybindOverlayOpacity = 0.4f;
 static bool g_ShowKeybindConfig = false;
 static bool g_InCombat = false;
@@ -2222,7 +2222,7 @@ static void LoadSettings()
         int keybindAnchor = j.value("keybindPositionAnchor", static_cast<int>(AnchorPoint::MiddleLeft));
         keybindAnchor = std::clamp(keybindAnchor, 0, static_cast<int>(AnchorPoint::COUNT) - 1);
         g_KeybindPosition.anchor = static_cast<AnchorPoint>(keybindAnchor);
-        g_KeybindPosition.offsetXPct = j.value("keybindPositionX", 2.0f);
+        g_KeybindPosition.offsetXPct = j.value("keybindPositionX", 0.0f);
         g_KeybindPosition.offsetYPct = j.value("keybindPositionY", 0.0f);
         g_KeybindOverlayOpacity = j.value("keybindOpacity", 0.4f);
         ScanKeybindFiles();
