@@ -144,12 +144,253 @@ static const char* GetWineTtsPipePath()
     return g_WineTtsPipePath;
 }
 
+// Log a Wine-detection message to both Nexus log and OutputDebugStringA.
+// g_API may be null if called before AddonLoad assigns it — guard accordingly.
+static void WineLog(const char* msg)
+{
+    OutputDebugStringA(msg);
+    if (g_API) g_API->Log(LOGL_INFO, "GW2Accessibility", msg);
+}
+
 static bool DetectWine()
 {
+    bool detected = false;
+    char dbg[768];
+
+    WineLog("[WINE] ── DetectWine() start ──────────────────────────────");
+
+    // ── Method 1: ntdll wine_get_version / wine_get_build_id exports ─────────
+    // These are the most reliable indicators — real Windows ntdll never has them.
     HMODULE ntdll = GetModuleHandleA("ntdll.dll");
-    if (ntdll && GetProcAddress(ntdll, "wine_get_version"))
-        return true;
-    return false;
+    bool hasWineGetVersion  = ntdll && GetProcAddress(ntdll, "wine_get_version")      != nullptr;
+    bool hasWineGetBuildId  = ntdll && GetProcAddress(ntdll, "wine_get_build_id")     != nullptr;
+    bool hasWineGetHost     = ntdll && GetProcAddress(ntdll, "wine_get_host_version") != nullptr;
+    snprintf(dbg, sizeof(dbg),
+        "[WINE] [1] ntdll=%p wine_get_version=%d wine_get_build_id=%d wine_get_host_version=%d",
+        (void*)ntdll, hasWineGetVersion?1:0, hasWineGetBuildId?1:0, hasWineGetHost?1:0);
+    WineLog(dbg);
+
+    if (hasWineGetVersion)
+    {
+        typedef const char* (*Fn)();
+        auto fn = (Fn)GetProcAddress(ntdll, "wine_get_version");
+        snprintf(dbg, sizeof(dbg), "[WINE] [1] wine_get_version() = \"%s\"", fn ? fn() : "(null)");
+        WineLog(dbg);
+        detected = true;
+    }
+    if (hasWineGetBuildId)
+    {
+        typedef const char* (*Fn)();
+        auto fn = (Fn)GetProcAddress(ntdll, "wine_get_build_id");
+        snprintf(dbg, sizeof(dbg), "[WINE] [1] wine_get_build_id() = \"%s\"", fn ? fn() : "(null)");
+        WineLog(dbg);
+        detected = true;
+    }
+
+    // ── Method 2: Wine-specific DLLs loaded in process ───────────────────────
+    // winex11.drv / winewayland.drv are Wine graphics drivers, never present on Windows.
+    const char* wineDlls[] = { "winex11.drv", "winewayland.drv", "winebus.sys", "winemac.drv" };
+    for (const char* dll : wineDlls)
+    {
+        HMODULE h = GetModuleHandleA(dll);
+        snprintf(dbg, sizeof(dbg), "[WINE] [2] GetModuleHandle(\"%s\") = %p (%s)",
+            dll, (void*)h, h ? "FOUND" : "not loaded");
+        WineLog(dbg);
+        if (h) detected = true;
+    }
+
+    // ── Method 3: Environment variables ──────────────────────────────────────
+    struct { const char* name; bool triggersDetect; } envVars[] = {
+        { "WINE",            true  },
+        { "WINEPREFIX",      true  },
+        { "PROTON_VERSION",  true  },
+        { "STEAM_RUNTIME",   false }, // present but not conclusive alone
+        { "HOME",            false }, // present on Linux, also set by some Windows tools
+        { "XDG_RUNTIME_DIR", true  }, // Linux-only runtime dir
+        { "DISPLAY",         false }, // X11 display — Linux indicator
+        { "WAYLAND_DISPLAY", false }, // Wayland display
+    };
+    for (const auto& ev : envVars)
+    {
+        char val[512] = {0};
+        DWORD len = GetEnvironmentVariableA(ev.name, val, sizeof(val));
+        snprintf(dbg, sizeof(dbg), "[WINE] [3] %s=%s (len=%lu)",
+            ev.name, len > 0 ? val : "(not set)", (unsigned long)len);
+        WineLog(dbg);
+        if (len > 0 && ev.triggersDetect) detected = true;
+    }
+
+    // ── Method 4: Registry key HKLM\Software\Wine ───────────────────────────
+    HKEY hKey = nullptr;
+    LONG regRes = RegOpenKeyExA(HKEY_LOCAL_MACHINE, "Software\\Wine", 0, KEY_READ, &hKey);
+    snprintf(dbg, sizeof(dbg), "[WINE] [4] HKLM\\Software\\Wine: %s (code=%ld)",
+        regRes == ERROR_SUCCESS ? "EXISTS" : "not found", (long)regRes);
+    WineLog(dbg);
+    if (regRes == ERROR_SUCCESS) { RegCloseKey(hKey); detected = true; }
+
+    // ── Method 5: Windows version via RtlGetVersion (bypasses compat shim) ──
+    typedef LONG(WINAPI* RtlGetVersionFn)(OSVERSIONINFOEXW*);
+    OSVERSIONINFOEXW rtlVer = {};
+    rtlVer.dwOSVersionInfoSize = sizeof(rtlVer);
+    if (ntdll)
+    {
+        auto RtlGetVersion = (RtlGetVersionFn)GetProcAddress(ntdll, "RtlGetVersion");
+        if (RtlGetVersion && RtlGetVersion(&rtlVer) == 0)
+        {
+            snprintf(dbg, sizeof(dbg),
+                "[WINE] [5] RtlGetVersion: %lu.%lu build=%lu sp=%u productType=%u",
+                (unsigned long)rtlVer.dwMajorVersion, (unsigned long)rtlVer.dwMinorVersion,
+                (unsigned long)rtlVer.dwBuildNumber, rtlVer.wServicePackMajor, rtlVer.wProductType);
+            WineLog(dbg);
+        }
+        else WineLog("[WINE] [5] RtlGetVersion not available");
+    }
+
+    // ── Method 6: Module file path — Wine uses Windows-style paths from Linux FS
+    char modulePath[512] = {0};
+    GetModuleFileNameA(nullptr, modulePath, sizeof(modulePath));
+    snprintf(dbg, sizeof(dbg), "[WINE] [6] GetModuleFileNameA = \"%s\"", modulePath);
+    WineLog(dbg);
+
+    // ── Method 7: Z:\ drive root — Wine always maps Z:\ to Linux / ───────────
+    DWORD zAttrib = GetFileAttributesA("Z:\\");
+    snprintf(dbg, sizeof(dbg), "[WINE] [7] GetFileAttributes(\"Z:\\\\\") = 0x%08lX (%s)",
+        (unsigned long)zAttrib,
+        zAttrib == INVALID_FILE_ATTRIBUTES ? "INVALID (not present)" : "EXISTS");
+    WineLog(dbg);
+    if (zAttrib != INVALID_FILE_ATTRIBUTES) detected = true;
+
+    // ── Method 8: Z:\proc\version — exists on Linux, never on Windows ────────
+    DWORD procAttrib = GetFileAttributesA("Z:\\proc\\version");
+    snprintf(dbg, sizeof(dbg), "[WINE] [8] GetFileAttributes(\"Z:\\\\proc\\\\version\") = 0x%08lX (%s)",
+        (unsigned long)procAttrib,
+        procAttrib == INVALID_FILE_ATTRIBUTES ? "INVALID (not present)" : "EXISTS");
+    WineLog(dbg);
+    if (procAttrib != INVALID_FILE_ATTRIBUTES) detected = true;
+
+    // ── Method 9: D3D / DXGI renderer string ─────────────────────────────────
+    // Wine/Proton typically reports the real Linux GPU via Mesa/RADV/DXVK.
+    // We can query DXGI without creating a swap chain by using CreateDXGIFactory.
+    // This is read-only and safe to call at load time.
+    {
+        typedef HRESULT(WINAPI* CreateDXGIFactoryFn)(REFIID, void**);
+        HMODULE dxgi = LoadLibraryA("dxgi.dll");
+        snprintf(dbg, sizeof(dbg), "[WINE] [9] dxgi.dll loaded: %s (%p)", dxgi ? "YES" : "NO", (void*)dxgi);
+        WineLog(dbg);
+        if (dxgi)
+        {
+            auto createFactory = (CreateDXGIFactoryFn)GetProcAddress(dxgi, "CreateDXGIFactory");
+            if (createFactory)
+            {
+                // IDXGIFactory GUID: {7b7166ec-21c7-44ae-b21a-c9ae321ae369}
+                static const GUID IID_IDXGIFactory_ = {
+                    0x7b7166ec, 0x21c7, 0x44ae,
+                    {0xb2,0x1a,0xc9,0xae,0x32,0x1a,0xe3,0x69}
+                };
+                void* pFactory = nullptr;
+                HRESULT hr = createFactory(IID_IDXGIFactory_, &pFactory);
+                snprintf(dbg, sizeof(dbg), "[WINE] [9] CreateDXGIFactory hr=0x%08lX factory=%p",
+                    (unsigned long)hr, pFactory);
+                WineLog(dbg);
+
+                if (SUCCEEDED(hr) && pFactory)
+                {
+                    // IDXGIFactory::EnumAdapters(0) → IDXGIAdapter → GetDesc → Description
+                    // Use vtable index: EnumAdapters is slot 7 on IDXGIFactory
+                    struct IDXGIFactoryVtbl { void* slots[8]; };
+                    typedef HRESULT(WINAPI* EnumAdaptersFn)(void*, UINT, void**);
+                    auto vtbl = *(IDXGIFactoryVtbl**)pFactory;
+                    auto enumAdapters = (EnumAdaptersFn)vtbl->slots[7];
+                    void* pAdapter = nullptr;
+                    HRESULT hrA = enumAdapters(pFactory, 0, &pAdapter);
+                    snprintf(dbg, sizeof(dbg), "[WINE] [9] EnumAdapters(0) hr=0x%08lX adapter=%p",
+                        (unsigned long)hrA, pAdapter);
+                    WineLog(dbg);
+
+                    if (SUCCEEDED(hrA) && pAdapter)
+                    {
+                        // IDXGIAdapter::GetDesc is vtable slot 8
+                        // DXGI_ADAPTER_DESC: Description[128] + 5 DWORDs + 3 SIZE_Ts + LUID
+                        struct SimpleAdapterDesc {
+                            WCHAR Description[128];
+                            UINT VendorId, DeviceId, SubSysId, Revision;
+                            SIZE_T DedicatedVideoMemory, DedicatedSystemMemory, SharedSystemMemory;
+                        };
+                        typedef HRESULT(WINAPI* GetDescFn)(void*, SimpleAdapterDesc*);
+                        auto adapterVtbl = *(IDXGIFactoryVtbl**)pAdapter;
+                        auto getDesc = (GetDescFn)adapterVtbl->slots[8];
+                        SimpleAdapterDesc desc = {};
+                        HRESULT hrD = getDesc(pAdapter, &desc);
+                        if (SUCCEEDED(hrD))
+                        {
+                            char descUtf8[256] = {};
+                            WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1,
+                                descUtf8, sizeof(descUtf8), nullptr, nullptr);
+                            snprintf(dbg, sizeof(dbg),
+                                "[WINE] [9] Adapter: \"%s\" VendorId=0x%04X DeviceId=0x%04X VRAM=%zuMB",
+                                descUtf8, desc.VendorId, desc.DeviceId,
+                                desc.DedicatedVideoMemory / (1024*1024));
+                            WineLog(dbg);
+                            // DXVK/VKD3D vendors: 0x1002=AMD, 0x10DE=NVIDIA, 0x8086=Intel
+                            // Wine software renderer reports "Wine D3D" in description
+                            if (strstr(descUtf8, "Wine") || strstr(descUtf8, "llvmpipe") ||
+                                strstr(descUtf8, "DXVK")  || strstr(descUtf8, "softpipe"))
+                            {
+                                WineLog("[WINE] [9] Adapter description matches Wine/DXVK/software renderer");
+                                detected = true;
+                            }
+                        }
+                        // Release adapter (vtable slot 2 = Release on IUnknown)
+                        typedef ULONG(WINAPI* ComReleaseFn)(void*);
+                        auto releaseAdapter = (ComReleaseFn)adapterVtbl->slots[2];
+                        releaseAdapter(pAdapter);
+                    }
+                    // Release factory (vtable slot 2 = IUnknown::Release)
+                    typedef ULONG(WINAPI* ComReleaseFn)(void*);
+                    auto releaseFactory = (ComReleaseFn)(*(void***)pFactory)[2];
+                    releaseFactory(pFactory);
+                }
+            }
+            FreeLibrary(dxgi);
+        }
+    }
+
+    // ── Method 10: System directory path ──────────────────────────────────────
+    // On Wine, GetSystemDirectoryA typically returns C:\windows\system32.
+    // On real Windows it matches the actual install, usually also system32 but
+    // the drive letter and casing may differ; not conclusive alone but useful context.
+    {
+        char sysDir[512] = {0};
+        GetSystemDirectoryA(sysDir, sizeof(sysDir));
+        snprintf(dbg, sizeof(dbg), "[WINE] [10] GetSystemDirectoryA = \"%s\"", sysDir);
+        WineLog(dbg);
+
+        char tempDir[512] = {0};
+        GetTempPathA(sizeof(tempDir), tempDir);
+        snprintf(dbg, sizeof(dbg), "[WINE] [10] GetTempPathA = \"%s\"", tempDir);
+        WineLog(dbg);
+    }
+
+    // ── Method 11: Computer name / user name (Wine uses Linux hostname) ───────
+    {
+        char compName[256] = {0};
+        DWORD compLen = sizeof(compName);
+        GetComputerNameA(compName, &compLen);
+        snprintf(dbg, sizeof(dbg), "[WINE] [11] ComputerName = \"%s\"", compName);
+        WineLog(dbg);
+
+        char userName[256] = {0};
+        DWORD userLen = sizeof(userName);
+        GetUserNameA(userName, &userLen);
+        snprintf(dbg, sizeof(dbg), "[WINE] [11] UserName = \"%s\"", userName);
+        WineLog(dbg);
+    }
+
+    snprintf(dbg, sizeof(dbg),
+        "[WINE] ── DetectWine() result: %s ─────────────────────────",
+        detected ? "TRUE (Wine/Proton)" : "FALSE (native Windows)");
+    WineLog(dbg);
+    return detected;
 }
 
 static void SpeakViaWinePipe(const char* utf8)
