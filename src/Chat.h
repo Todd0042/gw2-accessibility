@@ -1,3 +1,5 @@
+// Chat event structures for "Events: Chat" addon API (Vonsh.1427).
+// Interface definitions reproduced for ABI interop with the Nexus events system.
 #ifndef GW2_CHAT
 #define GW2_CHAT
 #ifdef __cplusplus
