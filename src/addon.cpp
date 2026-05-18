@@ -4352,7 +4352,7 @@ extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef()
     static AddonVersion_t s_Version = { 0, 2, 3, 0 };
 
     static AddonDefinition_t s_Def = {};
-    s_Def.Signature  = -2;
+    s_Def.Signature  = 897849539; // 0x358418C3 — random 4 bytes, no longer -2
     s_Def.APIVersion = NEXUS_API_VERSION;
     s_Def.Name       = "GW2Accessibility";
     s_Def.Version    = s_Version;
