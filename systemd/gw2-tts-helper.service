@@ -1,0 +1,14 @@
+[Unit]
+Description=GW2 Accessibility TTS Helper Daemon
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=%h/Documents/GitHub/gw2-accessibility/tts_helper.sh
+Restart=on-failure
+RestartSec=3
+StandardOutput=append:/tmp/tts_helper.log
+StandardError=append:/tmp/tts_helper.log
+
+[Install]
+WantedBy=default.target

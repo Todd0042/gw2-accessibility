@@ -130,18 +130,86 @@ static bool g_IsWine = false;
 static bool g_WineTtsFallback = false;
 static char g_WineTtsPipePath[512] = {0};
 
+// Linux TTS settings (espeak-ng / Piper via pipe, used when g_IsWine == true)
+static char g_LinuxEngine[32]    = "piper";
+static char g_LinuxVoice[64]     = "en_US-ryan-high";
+static int  g_LinuxSpeed         = 150;
+static int  g_LinuxPitch         = 40;
+static int  g_LinuxAmplitude     = 175;
+
+// Derives the Linux home directory from env vars available inside Wine.
+// HOME is often unset in Wine; fall back to parsing WINEPREFIX path.
+static std::string GetLinuxHome()
+{
+    char home[512] = {0};
+    if (GetEnvironmentVariableA("HOME", home, sizeof(home)) > 0)
+        return home;
+
+    char prefix[512] = {0};
+    if (GetEnvironmentVariableA("WINEPREFIX", prefix, sizeof(prefix)) > 0)
+    {
+        const char* p = strstr(prefix, "/home/");
+        if (p)
+        {
+            p += 6;
+            const char* slash = strchr(p, '/');
+            if (slash)
+                return std::string("/home/") + std::string(p, slash - p);
+        }
+    }
+    return "/home/todd"; // last-resort fallback
+}
+
 static const char* GetWineTtsPipePath()
 {
     if (g_WineTtsPipePath[0]) return g_WineTtsPipePath;
-
-    char home[256] = {0};
-    DWORD len = GetEnvironmentVariableA("HOME", home, sizeof(home));
-    if (len > 0 && len < sizeof(home))
-        snprintf(g_WineTtsPipePath, sizeof(g_WineTtsPipePath), "Z:\\%s\\.gw2-tts-pipe", home);
-    else
-        snprintf(g_WineTtsPipePath, sizeof(g_WineTtsPipePath), "Z:\\home\\todd\\.gw2-tts-pipe");
-
+    std::string linuxHome = GetLinuxHome();
+    snprintf(g_WineTtsPipePath, sizeof(g_WineTtsPipePath), "Z:%s\\.gw2-tts-pipe", linuxHome.c_str());
     return g_WineTtsPipePath;
+}
+
+// Returns the Wine-accessible path to the Linux TTS config file.
+static std::string GetLinuxTtsConfigPath()
+{
+    std::string linuxHome = GetLinuxHome();
+    return std::string("Z:") + linuxHome + "\\.gw2-tts-config";
+}
+
+// Writes ~/.gw2-tts-config via the Wine Z:\ mapping, then sends CMD:RELOAD through the pipe.
+static void WriteLinuxTtsConfig()
+{
+    std::string cfgPath = GetLinuxTtsConfigPath();
+    HANDLE hFile = CreateFileA(cfgPath.c_str(), GENERIC_WRITE, 0, nullptr,
+                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE)
+    {
+        char buf[512];
+        snprintf(buf, sizeof(buf), "[TTS] WriteLinuxTtsConfig: CreateFile failed for %s (err=0x%08lX)",
+                 cfgPath.c_str(), (unsigned long)GetLastError());
+        if (g_API) g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
+        return;
+    }
+
+    char content[512];
+    int len = snprintf(content, sizeof(content),
+        "ENGINE=%s\nVOICE=%s\nSPEED=%d\nPITCH=%d\nAMPLITUDE=%d\n",
+        g_LinuxEngine, g_LinuxVoice, g_LinuxSpeed, g_LinuxPitch, g_LinuxAmplitude);
+    DWORD written = 0;
+    WriteFile(hFile, content, static_cast<DWORD>(len), &written, nullptr);
+    CloseHandle(hFile);
+
+    // Signal the running daemon to reload its config
+    const char* pipePath = GetWineTtsPipePath();
+    HANDLE hPipe = CreateFileA(pipePath, GENERIC_WRITE, 0, nullptr,
+                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hPipe != INVALID_HANDLE_VALUE)
+    {
+        const char* cmd = "CMD:RELOAD\n";
+        DWORD w = 0;
+        WriteFile(hPipe, cmd, static_cast<DWORD>(strlen(cmd)), &w, nullptr);
+        CloseHandle(hPipe);
+        if (g_API) g_API->Log(LOGL_INFO, "GW2Accessibility", "[TTS] Sent CMD:RELOAD to tts_helper");
+    }
 }
 
 // Log a Wine-detection message to both Nexus log and OutputDebugStringA.
@@ -2150,6 +2218,11 @@ static void SaveSettings()
     tts["outputTokenId"] = g_TtsOutputTokenId;
     tts["volume"]        = g_TtsVolume;
     tts["rate"]          = g_TtsRate;
+    tts["linuxEngine"]   = g_LinuxEngine;
+    tts["linuxVoice"]    = g_LinuxVoice;
+    tts["linuxSpeed"]    = g_LinuxSpeed;
+    tts["linuxPitch"]    = g_LinuxPitch;
+    tts["linuxAmplitude"] = g_LinuxAmplitude;
     j["tts"] = tts;
 
     j["mechanicsAnnounce"] = g_MechanicsAnnounceEnabled;
@@ -2304,6 +2377,15 @@ static void LoadSettings()
             g_TtsVolume          = std::clamp(g_TtsVolume, 0, 100);
             g_TtsRate            = tts.value("rate", 0);
             g_TtsRate            = std::clamp(g_TtsRate, -10, 10);
+            {
+                std::string eng = tts.value("linuxEngine", "piper");
+                strncpy(g_LinuxEngine, eng.c_str(), sizeof(g_LinuxEngine) - 1);
+                std::string voc = tts.value("linuxVoice", "en_US-ryan-high");
+                strncpy(g_LinuxVoice, voc.c_str(), sizeof(g_LinuxVoice) - 1);
+                g_LinuxSpeed     = std::clamp(tts.value("linuxSpeed",     150), 80, 500);
+                g_LinuxPitch     = std::clamp(tts.value("linuxPitch",      40),  0,  99);
+                g_LinuxAmplitude = std::clamp(tts.value("linuxAmplitude", 175),  0, 200);
+            }
         }
 
         g_MechanicsAnnounceEnabled = j.value("mechanicsAnnounce", false);
@@ -4206,74 +4288,150 @@ static void OnOptionsRender()
         ImGui::TextUnformatted("TTS Voice & Output");
         ImGui::Separator();
 
-        // Voice dropdown
+        if (g_IsWine)
         {
-            std::vector<const char*> voiceNames;
-            voiceNames.reserve(g_TtsVoices.size());
-            for (auto& v : g_TtsVoices) voiceNames.push_back(v.name.c_str());
+            // ── Linux TTS controls (espeak-ng / Piper via pipe) ──────────────────
+            ImGui::TextDisabled("Running on Linux/Wine — using tts_helper.sh (espeak-ng/Piper)");
 
-            ImGui::SetNextItemWidth(300.0f);
-            if (ImGui::Combo("Voice##ttsvoice", &g_TtsVoiceIdx,
-                             voiceNames.data(), static_cast<int>(voiceNames.size())))
+            // Engine dropdown
             {
-                g_TtsVoiceTokenId = g_TtsVoices[g_TtsVoiceIdx].tokenId;
-                // Force SAPI reinit so new voice takes effect immediately on next speak
-                if (g_pVoice) { g_pVoice->Release(); g_pVoice = nullptr; }
-                g_TtsReady = false;
+                static const char* engineNames[] = { "espeak-ng", "piper" };
+                int engineIdx = (strcmp(g_LinuxEngine, "piper") == 0) ? 1 : 0;
+                ImGui::SetNextItemWidth(200.0f);
+                if (ImGui::Combo("Engine##linuxengine", &engineIdx, engineNames, 2))
+                {
+                    strncpy(g_LinuxEngine, engineNames[engineIdx], sizeof(g_LinuxEngine) - 1);
+                    changed = true;
+                }
+            }
+
+            // Voice text input
+            {
+                ImGui::SetNextItemWidth(200.0f);
+                if (ImGui::InputText("Voice##linuxvoice", g_LinuxVoice, sizeof(g_LinuxVoice)))
+                    changed = true;
+                ImGui::SameLine();
+                ImGui::TextDisabled("(espeak: en-us, en-gb | piper: en_US-ryan-high)");
+            }
+
+            // Speed slider (espeak-ng WPM, Piper uses fixed speed)
+            {
+                ImGui::SetNextItemWidth(200.0f);
+                if (ImGui::SliderInt("Speed (WPM)##linuxspeed", &g_LinuxSpeed, 80, 500))
+                {
+                    g_LinuxSpeed = std::clamp(g_LinuxSpeed, 80, 500);
+                    changed = true;
+                }
+            }
+
+            // Pitch slider
+            {
+                ImGui::SetNextItemWidth(200.0f);
+                if (ImGui::SliderInt("Pitch##linuxpitch", &g_LinuxPitch, 0, 99))
+                {
+                    g_LinuxPitch = std::clamp(g_LinuxPitch, 0, 99);
+                    changed = true;
+                }
+            }
+
+            // Amplitude/volume slider
+            {
+                ImGui::SetNextItemWidth(200.0f);
+                if (ImGui::SliderInt("Amplitude##linuxamp", &g_LinuxAmplitude, 0, 200))
+                {
+                    g_LinuxAmplitude = std::clamp(g_LinuxAmplitude, 0, 200);
+                    changed = true;
+                }
+            }
+
+            // Apply button — writes config and sends CMD:RELOAD to the running daemon
+            if (ImGui::Button("Apply & Reload##linuxreload"))
+            {
+                WriteLinuxTtsConfig();
                 changed = true;
             }
             ImGui::SameLine();
-            if (ImGui::Button("Refresh##voicerefresh"))
+            ImGui::TextDisabled("Writes ~/.gw2-tts-config and signals the daemon");
+
+            // Test button
+            ImGui::SameLine();
+            if (ImGui::Button("Test TTS##ttsdevtest"))
             {
-                EnumerateTtsVoices();
-                EnumerateTtsOutputDevices();
+                if (!g_WineTtsFallback) g_WineTtsFallback = true;
+                SpeakText(L"TTS voice test.");
             }
         }
-
-        // Output device dropdown
+        else
         {
-            std::vector<const char*> devNames;
-            devNames.reserve(g_TtsOutputDevices.size());
-            for (auto& d : g_TtsOutputDevices) devNames.push_back(d.name.c_str());
-
-            ImGui::SetNextItemWidth(300.0f);
-            if (ImGui::Combo("Output##ttsoutput", &g_TtsOutputIdx,
-                             devNames.data(), static_cast<int>(devNames.size())))
+            // ── Windows SAPI controls ────────────────────────────────────────────
+            // Voice dropdown
             {
-                g_TtsOutputTokenId = g_TtsOutputDevices[g_TtsOutputIdx].tokenId;
-                if (g_pVoice) { g_pVoice->Release(); g_pVoice = nullptr; }
-                g_TtsReady = false;
-                changed = true;
-            }
-        }
+                std::vector<const char*> voiceNames;
+                voiceNames.reserve(g_TtsVoices.size());
+                for (auto& v : g_TtsVoices) voiceNames.push_back(v.name.c_str());
 
-        // Volume slider
-        {
-            ImGui::SetNextItemWidth(300.0f);
-            if (ImGui::SliderInt("Volume##ttsvolume", &g_TtsVolume, 0, 100))
+                ImGui::SetNextItemWidth(300.0f);
+                if (ImGui::Combo("Voice##ttsvoice", &g_TtsVoiceIdx,
+                                 voiceNames.data(), static_cast<int>(voiceNames.size())))
+                {
+                    g_TtsVoiceTokenId = g_TtsVoices[g_TtsVoiceIdx].tokenId;
+                    if (g_pVoice) { g_pVoice->Release(); g_pVoice = nullptr; }
+                    g_TtsReady = false;
+                    changed = true;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Refresh##voicerefresh"))
+                {
+                    EnumerateTtsVoices();
+                    EnumerateTtsOutputDevices();
+                }
+            }
+
+            // Output device dropdown
             {
-                g_TtsVolume = std::clamp(g_TtsVolume, 0, 100);
-                if (g_pVoice) g_pVoice->SetVolume(static_cast<USHORT>(g_TtsVolume));
-                changed = true;
-            }
-        }
+                std::vector<const char*> devNames;
+                devNames.reserve(g_TtsOutputDevices.size());
+                for (auto& d : g_TtsOutputDevices) devNames.push_back(d.name.c_str());
 
-        // Rate (speed) slider
-        {
-            ImGui::SetNextItemWidth(300.0f);
-            if (ImGui::SliderInt("Speed##ttsrate", &g_TtsRate, -10, 10))
+                ImGui::SetNextItemWidth(300.0f);
+                if (ImGui::Combo("Output##ttsoutput", &g_TtsOutputIdx,
+                                 devNames.data(), static_cast<int>(devNames.size())))
+                {
+                    g_TtsOutputTokenId = g_TtsOutputDevices[g_TtsOutputIdx].tokenId;
+                    if (g_pVoice) { g_pVoice->Release(); g_pVoice = nullptr; }
+                    g_TtsReady = false;
+                    changed = true;
+                }
+            }
+
+            // Volume slider
             {
-                g_TtsRate = std::clamp(g_TtsRate, -10, 10);
-                if (g_pVoice) g_pVoice->SetRate(g_TtsRate);
-                changed = true;
+                ImGui::SetNextItemWidth(300.0f);
+                if (ImGui::SliderInt("Volume##ttsvolume", &g_TtsVolume, 0, 100))
+                {
+                    g_TtsVolume = std::clamp(g_TtsVolume, 0, 100);
+                    if (g_pVoice) g_pVoice->SetVolume(static_cast<USHORT>(g_TtsVolume));
+                    changed = true;
+                }
             }
-        }
 
-        // Test button
-        if (ImGui::Button("Test TTS##ttsdevtest"))
-        {
-            InitSAPI();
-            if (g_TtsReady) SpeakText(L"TTS voice test.");
+            // Rate (speed) slider
+            {
+                ImGui::SetNextItemWidth(300.0f);
+                if (ImGui::SliderInt("Speed##ttsrate", &g_TtsRate, -10, 10))
+                {
+                    g_TtsRate = std::clamp(g_TtsRate, -10, 10);
+                    if (g_pVoice) g_pVoice->SetRate(g_TtsRate);
+                    changed = true;
+                }
+            }
+
+            // Test button
+            if (ImGui::Button("Test TTS##ttsdevtest"))
+            {
+                InitSAPI();
+                if (g_TtsReady) SpeakText(L"TTS voice test.");
+            }
         }
 
         ImGui::Dummy(ImVec2(0, 6));
@@ -4591,7 +4749,7 @@ void AddonUnload()
 
 extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef()
 {
-    static AddonVersion_t s_Version = { 0, 2, 3, 0 };
+    static AddonVersion_t s_Version = { 1, 2, 0, 0 };
 
     static AddonDefinition_t s_Def = {};
     s_Def.Signature  = 897849539; // 0x358418C3 — random 4 bytes, no longer -2
