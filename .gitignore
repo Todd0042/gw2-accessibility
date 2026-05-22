@@ -1,10 +1,4 @@
-build/CMakeFiles/
-build/CMakeCache.txt
-build/build.ninja
-build/.ninja_deps
-build/.ninja_log
-build/cmake_install.cmake
-build/*.zip
+build/
 *.dll
 *.dll.a
 .vs/
