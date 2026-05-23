@@ -4358,19 +4358,20 @@ static void OnOptionsRender()
                 ImGui::TextDisabled("150 = normal. Piper: maps to --length_scale. espeak-ng: words per minute.");
             }
 
-            // Pitch slider — espeak-ng only; disabled for piper
+            // Pitch slider — espeak-ng only; visually dimmed for piper
             {
                 bool piperActive = (strcmp(g_LinuxEngine, "piper") == 0);
-                if (piperActive) ImGui::BeginDisabled();
+                if (piperActive)
+                    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.4f);
                 ImGui::SetNextItemWidth(200.0f);
-                if (ImGui::SliderInt("Pitch##linuxpitch", &g_LinuxPitch, 0, 99))
+                if (ImGui::SliderInt("Pitch##linuxpitch", &g_LinuxPitch, 0, 99) && !piperActive)
                 {
                     g_LinuxPitch = std::clamp(g_LinuxPitch, 0, 99);
                     changed = true;
                 }
                 if (piperActive)
                 {
-                    ImGui::EndDisabled();
+                    ImGui::PopStyleVar();
                     ImGui::SameLine();
                     ImGui::TextDisabled("(espeak-ng only)");
                 }
