@@ -4,7 +4,7 @@
 static const char g_ReffectPackJson[] = R"json(
 {
   "schema": "v1",
-  "packVersion": 1,
+  "packVersion": 2,
   "enabled": true,
   "name": "GW2Accessibility",
   "anchor": {

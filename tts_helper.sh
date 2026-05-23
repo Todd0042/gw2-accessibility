@@ -119,49 +119,52 @@ fi
 echo "[gw2-tts-helper] Press Ctrl+C to stop"
 
 cleanup() {
+    exec 3>&-
     rm -f "$PIPE"
     echo "[gw2-tts-helper] Stopped"
     exit 0
 }
 trap cleanup INT TERM
 
+# Open FIFO with O_RDWR so the read end is never EOF-signalled when a writer
+# disconnects — avoids the race where Wine's non-blocking CreateFileA fails
+# during the gap between a writer closing and the next read() call.
+exec 3<>"$PIPE"
+
 # ── Main loop ─────────────────────────────────────────────────────────────
-while true; do
-    while IFS= read -r line; do
-        [ -z "$line" ] && continue
+while IFS= read -u3 -r line; do
+    [ -z "$line" ] && continue
 
-        # Handle control commands from the addon
-        if [[ "$line" == CMD:* ]]; then
-            cmd="${line#CMD:}"
-            case "$cmd" in
-                RELOAD)
-                    load_config
-                    echo "[gw2-tts-helper] Config reloaded: ENGINE=$ENGINE VOICE=$VOICE SPEED=$SPEED PITCH=$PITCH AMP=$AMPLITUDE"
-                    ;;
-                *)
-                    echo "[gw2-tts-helper] Unknown command: $cmd"
-                    ;;
-            esac
-            continue
-        fi
-
-        case "$ENGINE" in
-            piper)
-                model_file=$(resolve_piper_model "$VOICE")
-                if [ -n "$model_file" ] && [ -n "$PIPER_BIN" ]; then
-                    LD_LIBRARY_PATH="$(dirname "$PIPER_BIN"):$LD_LIBRARY_PATH" \
-                        echo "$line" | "$PIPER_BIN" \
-                        --model "$model_file" --output-raw 2>/dev/null |
-                        aplay -r 22050 -f S16_LE -c 1 2>/dev/null &
-                else
-                    # Fallback to espeak-ng if piper unavailable
-                    espeak-ng -v "$VOICE" -s "$SPEED" -p "$PITCH" -a "$AMPLITUDE" "$line" 2>/dev/null &
-                fi
+    # Handle control commands from the addon
+    if [[ "$line" == CMD:* ]]; then
+        cmd="${line#CMD:}"
+        case "$cmd" in
+            RELOAD)
+                load_config
+                echo "[gw2-tts-helper] Config reloaded: ENGINE=$ENGINE VOICE=$VOICE SPEED=$SPEED PITCH=$PITCH AMP=$AMPLITUDE"
                 ;;
             *)
-                espeak-ng -v "$VOICE" -s "$SPEED" -p "$PITCH" -a "$AMPLITUDE" "$line" 2>/dev/null &
+                echo "[gw2-tts-helper] Unknown command: $cmd"
                 ;;
         esac
-    done < "$PIPE"
-    sleep 0.1
+        continue
+    fi
+
+    case "$ENGINE" in
+        piper)
+            model_file=$(resolve_piper_model "$VOICE")
+            if [ -n "$model_file" ] && [ -n "$PIPER_BIN" ]; then
+                LD_LIBRARY_PATH="$(dirname "$PIPER_BIN"):$LD_LIBRARY_PATH" \
+                    echo "$line" | "$PIPER_BIN" \
+                    --model "$model_file" --output-raw 2>/dev/null |
+                    aplay -r 22050 -f S16_LE -c 1 2>/dev/null &
+            else
+                # Fallback to espeak-ng if piper unavailable
+                espeak-ng -v "$VOICE" -s "$SPEED" -p "$PITCH" -a "$AMPLITUDE" "$line" 2>/dev/null &
+            fi
+            ;;
+        *)
+            espeak-ng -v "$VOICE" -s "$SPEED" -p "$PITCH" -a "$AMPLITUDE" "$line" 2>/dev/null &
+            ;;
+    esac
 done

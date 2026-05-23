@@ -465,6 +465,8 @@ static void SpeakViaWinePipe(const char* utf8)
 {
     if (!g_WineTtsFallback) return;
 
+    static int s_ConsecFail = 0;
+
     const char* pipePath = GetWineTtsPipePath();
     HANDLE hPipe = CreateFileA(pipePath, GENERIC_WRITE, 0, nullptr,
                                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -472,11 +474,19 @@ static void SpeakViaWinePipe(const char* utf8)
     {
         DWORD err = GetLastError();
         char buf[384];
-        snprintf(buf, sizeof(buf), "[TTS] Pipe open failed: path=%s error=0x%08lX", pipePath, (unsigned long)err);
+        snprintf(buf, sizeof(buf), "[TTS] Pipe open failed (%d): path=%s error=0x%08lX",
+                 ++s_ConsecFail, pipePath, (unsigned long)err);
         g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
-        g_WineTtsFallback = false;
+        // Only disable after several consecutive failures — a single failure
+        // can be a transient race right after CMD:RELOAD is processed.
+        if (s_ConsecFail >= 5)
+        {
+            g_WineTtsFallback = false;
+            s_ConsecFail = 0;
+        }
         return;
     }
+    s_ConsecFail = 0;
 
     std::string line(utf8);
     for (char& c : line) { if (c == '\r' || c == '\n') c = ' '; }
@@ -627,6 +637,7 @@ static std::unordered_map<std::string, bool> g_SquadReadyStatus;
 static bool g_AllyDownedEnabled = false;
 static bool g_AllyDownedSquadOnly = false;
 static bool g_TofusToggle = false;
+static bool g_BreakbarAlertsEnabled = false;
 static std::unordered_set<uint64_t> g_DownedAgents;
 static bool g_BossDeathAnnounced = false;
 static bool g_InKeepConstructFight = false;
@@ -2198,6 +2209,7 @@ static void SaveSettings()
     j["allyDownedEnabled"] = g_AllyDownedEnabled;
     j["allyDownedSquadOnly"] = g_AllyDownedSquadOnly;
     j["tofusToggle"] = g_TofusToggle;
+    j["breakbarAlerts"] = g_BreakbarAlertsEnabled;
 
     nlohmann::json tts;
     tts["enabled"]       = g_Tts.enabled;
@@ -2340,6 +2352,7 @@ static void LoadSettings()
         g_AllyDownedEnabled = j.value("allyDownedEnabled", false);
         g_AllyDownedSquadOnly = j.value("allyDownedSquadOnly", false);
         g_TofusToggle = j.value("tofusToggle", false);
+        g_BreakbarAlertsEnabled = j.value("breakbarAlerts", false);
 
         auto& positions = j["positions"];
         if (positions.is_array())
@@ -2855,6 +2868,25 @@ static void OnCombatEvent(void* aEventArgs)
     {
         uint64_t agentId = cbt->ev->SourceAgent;
         g_DownedAgents.erase(agentId);
+        return;
+    }
+
+    // ── Breakbar alerts ──────────────────────────────────────────────────────
+    if (cbt->ev->IsStatechange == 34) // CBTS_BREAKBARSTATE
+    {
+        if (!g_BreakbarAlertsEnabled) return;
+        uint64_t state = cbt->ev->DestinationAgent;
+        // state: 1=active, 2=recovering, 3=broken
+        if (state == 1)
+        {
+            InitSAPI();
+            if (g_TtsReady) SpeakText(L"Breakbar active");
+        }
+        else if (state == 3)
+        {
+            InitSAPI();
+            if (g_TtsReady) SpeakText(L"Breakbar broken");
+        }
         return;
     }
 
@@ -4488,6 +4520,9 @@ static void OnOptionsRender()
         ImGui::TextDisabled("Speaks \"Ready check\" when the squad leader initiates one.");
         ImGui::TextDisabled("Requires Unofficial Extras (arcdps extension).");
 
+        changed |= ImGui::Checkbox("Breakbar Alerts", &g_BreakbarAlertsEnabled);
+        ImGui::TextDisabled("Speaks \"Breakbar active\" when a target's breakbar appears and \"Breakbar broken\" when it is depleted.");
+
         // ── Raid Mechanics TTS ──
         ImGui::Dummy(ImVec2(0, 4));
         ImGui::TextUnformatted("Raid Mechanic Alerts");
@@ -4749,7 +4784,7 @@ void AddonUnload()
 
 extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef()
 {
-    static AddonVersion_t s_Version = { 1, 2, 0, 0 };
+    static AddonVersion_t s_Version = { 1, 2, 1, 0 };
 
     static AddonDefinition_t s_Def = {};
     s_Def.Signature  = 897849539; // 0x358418C3 — random 4 bytes, no longer -2
