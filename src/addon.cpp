@@ -4346,7 +4346,7 @@ static void OnOptionsRender()
                 ImGui::TextDisabled("(espeak: en-us, en-gb | piper: en_US-ryan-high)");
             }
 
-            // Speed slider (espeak-ng WPM, Piper uses fixed speed)
+            // Speed slider
             {
                 ImGui::SetNextItemWidth(200.0f);
                 if (ImGui::SliderInt("Speed (WPM)##linuxspeed", &g_LinuxSpeed, 80, 500))
@@ -4354,15 +4354,25 @@ static void OnOptionsRender()
                     g_LinuxSpeed = std::clamp(g_LinuxSpeed, 80, 500);
                     changed = true;
                 }
+                ImGui::SameLine();
+                ImGui::TextDisabled("150 = normal. Piper: maps to --length_scale. espeak-ng: words per minute.");
             }
 
-            // Pitch slider
+            // Pitch slider — espeak-ng only; disabled for piper
             {
+                bool piperActive = (strcmp(g_LinuxEngine, "piper") == 0);
+                if (piperActive) ImGui::BeginDisabled();
                 ImGui::SetNextItemWidth(200.0f);
                 if (ImGui::SliderInt("Pitch##linuxpitch", &g_LinuxPitch, 0, 99))
                 {
                     g_LinuxPitch = std::clamp(g_LinuxPitch, 0, 99);
                     changed = true;
+                }
+                if (piperActive)
+                {
+                    ImGui::EndDisabled();
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("(espeak-ng only)");
                 }
             }
 
@@ -4374,6 +4384,8 @@ static void OnOptionsRender()
                     g_LinuxAmplitude = std::clamp(g_LinuxAmplitude, 0, 200);
                     changed = true;
                 }
+                ImGui::SameLine();
+                ImGui::TextDisabled("100 = normal. Piper: ffmpeg volume. espeak-ng: amplitude.");
             }
 
             // Apply button — writes config and sends CMD:RELOAD to the running daemon

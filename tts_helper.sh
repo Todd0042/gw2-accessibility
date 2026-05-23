@@ -142,10 +142,33 @@ while IFS= read -u3 -r line; do
         piper)
             model_file=$(resolve_piper_model "$VOICE")
             if [ -n "$model_file" ] && [ -n "$PIPER_BIN" ]; then
+                # Read sample rate from model config (voices vary: 16000 or 22050 Hz)
+                rate=$(python3 -c "
+import json
+try:
+    d = json.load(open('${model_file%.onnx}.onnx.json'))
+    print(d['audio']['sample_rate'])
+except:
+    print(22050)
+" 2>/dev/null)
+                [ -z "$rate" ] && rate=22050
+
+                # Map WPM (80-500) to piper length_scale: 150 WPM = 1.0 (normal)
+                length_scale=$(awk "BEGIN{printf \"%.3f\", 150.0/$SPEED}")
+
+                # Map amplitude (0-200) to ffmpeg volume (0.0-2.0)
+                vol=$(awk "BEGIN{printf \"%.3f\", $AMPLITUDE/100.0}")
+
                 LD_LIBRARY_PATH="$(dirname "$PIPER_BIN"):$LD_LIBRARY_PATH" \
                     echo "$line" | "$PIPER_BIN" \
-                    --model "$model_file" --output-raw 2>/dev/null |
-                    aplay -r 22050 -f S16_LE -c 1 2>/dev/null &
+                        --model "$model_file" \
+                        --length_scale "$length_scale" \
+                        --output-raw 2>/dev/null | \
+                    ffmpeg -loglevel quiet \
+                        -f s16le -ar "$rate" -ac 1 -i pipe:0 \
+                        -af "volume=$vol" \
+                        -f s16le -ar "$rate" -ac 1 pipe:1 | \
+                    aplay -q -r "$rate" -f S16_LE -c 1 &
             else
                 # Fallback to espeak-ng if piper unavailable
                 espeak-ng -v "$VOICE" -s "$SPEED" -p "$PITCH" -a "$AMPLITUDE" "$line" 2>/dev/null &
