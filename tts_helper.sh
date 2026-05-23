@@ -32,8 +32,9 @@ for candidate in "$HOME/piper/piper/piper" "/usr/bin/piper-tts" "/opt/piper-tts/
     [ -x "$candidate" ] && { PIPER_BIN="$candidate"; break; }
 done
 
-# Piper voice search path (created automatically if missing)
+# Piper voice search paths — user-local first, then system-wide package install
 PIPER_VOICE_DIR="$HOME/.local/share/piper-voices"
+PIPER_VOICE_DIR_SYSTEM="/usr/share/piper-voices"
 
 # ── Load config (also called on CMD:RELOAD) ───────────────────────────────
 load_config() {
@@ -68,33 +69,20 @@ resolve_piper_model() {
     local tag="$1"
     # Tag format: en_US-ryan-high
     # Voice dir structure: <lang>/<name>/<quality>/<tag>.onnx
-    local search_dir="${PIPER_MODEL_PATH:-$PIPER_VOICE_DIR}"
 
     # Direct path
-    if [ -f "$tag" ]; then
-        echo "$tag"
-        return 0
-    fi
-    # Full path to .onnx
-    if [ -f "$tag.onnx" ]; then
-        echo "$tag.onnx"
-        return 0
-    fi
+    if [ -f "$tag" ]; then echo "$tag"; return 0; fi
+    if [ -f "$tag.onnx" ]; then echo "$tag.onnx"; return 0; fi
 
-    # Search by tag (e.g. "en_US-ryan-high")
+    # Search user-specified path first, then user-local, then system package dir
     local found
-    found=$(find "$search_dir" -name "${tag}.onnx" 2>/dev/null | head -1)
-    if [ -n "$found" ]; then
-        echo "$found"
-        return 0
-    fi
-
-    # Search by basename (e.g. "ryan-high")
-    found=$(find "$search_dir" -name "*${tag}*.onnx" 2>/dev/null | head -1)
-    if [ -n "$found" ]; then
-        echo "$found"
-        return 0
-    fi
+    for search_dir in "${PIPER_MODEL_PATH}" "$PIPER_VOICE_DIR" "$PIPER_VOICE_DIR_SYSTEM"; do
+        [ -z "$search_dir" ] && continue
+        found=$(find "$search_dir" -name "${tag}.onnx" 2>/dev/null | head -1)
+        [ -n "$found" ] && { echo "$found"; return 0; }
+        found=$(find "$search_dir" -name "*${tag}*.onnx" 2>/dev/null | head -1)
+        [ -n "$found" ] && { echo "$found"; return 0; }
+    done
 
     echo ""
     return 1
