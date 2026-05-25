@@ -23,6 +23,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <mutex>
+#include <cmath>
 #include <winhttp.h>
 #include "embedded_icons.h"
 
@@ -646,6 +647,126 @@ static bool g_InKeepConstructFight = false;
 static int g_NecrosisStacks = 0;
 static DWORD g_LastNecrosisTick = 0;
 
+static std::wstring Utf8ToWide(const char* utf8); // forward declaration — defined below InitSAPI
+
+struct BoostSpeakJob { std::wstring text; float gain; };
+
+static DWORD WINAPI BoostSpeakThread(LPVOID param)
+{
+    auto* job = static_cast<BoostSpeakJob*>(param);
+    std::wstring text = std::move(job->text);
+    const float gain  = job->gain;
+    delete job;
+
+    static const GUID CLSID_SpStream_Local =
+        {0x715d9c59,0x4442,0x11d2,{0x96,0x05,0x00,0xc0,0x4f,0x8e,0xe6,0x28}};
+    static const GUID IID_ISpStream_MinGW  =
+        {0x12e3cca9,0x7518,0x44c5,{0xa5,0xe7,0xba,0x5a,0x79,0xcb,0x92,0x9e}};
+    static const GUID IID_ISpStream_MSDN   =
+        {0x12E3CCA9,0x953E,0x4E29,{0x86,0xA3,0xE1,0x32,0x27,0xE4,0x8C,0x66}};
+    static const GUID SPDFID_WFX           =
+        {0xC31ADBAE,0x527F,0x4FF5,{0xA2,0x30,0xF6,0x2B,0xB6,0x1F,0xF7,0x0C}};
+
+    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+
+    ISpVoice* pCap = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_SpVoice, nullptr, CLSCTX_ALL,
+                                IID_ISpVoice, (void**)&pCap)) || !pCap)
+    { CoUninitialize(); return 0; }
+
+    std::string voiceId = g_TtsVoiceTokenId;
+    std::string outId   = g_TtsOutputTokenId;
+    int rate            = std::clamp(g_TtsRate, -10, 10);
+
+    if (!voiceId.empty())
+    {
+        std::wstring wId = Utf8ToWide(voiceId.c_str());
+        ISpObjectToken* pTok = nullptr;
+        if (SUCCEEDED(CoCreateInstance(CLSID_SpObjectToken, nullptr, CLSCTX_ALL,
+                                       IID_ISpObjectToken, (void**)&pTok)) && pTok)
+        {
+            if (SUCCEEDED(pTok->SetId(nullptr, wId.c_str(), FALSE)))
+                pCap->SetVoice(pTok);
+            pTok->Release();
+        }
+    }
+    pCap->SetVolume(100);
+    pCap->SetRate(rate);
+
+    IStream* pMem = nullptr;
+    if (FAILED(CreateStreamOnHGlobal(nullptr, TRUE, &pMem)))
+    { pCap->Release(); CoUninitialize(); return 0; }
+
+    ISpStream* pSS = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_SpStream_Local, nullptr, CLSCTX_ALL,
+                                IID_ISpStream_MinGW, (void**)&pSS)) || !pSS)
+    {
+        CoCreateInstance(CLSID_SpStream_Local, nullptr, CLSCTX_ALL,
+                         IID_ISpStream_MSDN, (void**)&pSS);
+    }
+    if (!pSS) { pMem->Release(); pCap->Release(); CoUninitialize(); return 0; }
+
+    WAVEFORMATEX wfx = {};
+    wfx.wFormatTag      = WAVE_FORMAT_PCM;
+    wfx.nChannels       = 1;
+    wfx.nSamplesPerSec  = 22050;
+    wfx.wBitsPerSample  = 16;
+    wfx.nBlockAlign     = 2;
+    wfx.nAvgBytesPerSec = 44100;
+
+    if (FAILED(pSS->SetBaseStream(pMem, SPDFID_WFX, &wfx)) ||
+        FAILED(pCap->SetOutput(pSS, TRUE)))
+    { pSS->Release(); pMem->Release(); pCap->Release(); CoUninitialize(); return 0; }
+
+    pCap->Speak(text.c_str(), SPF_DEFAULT, nullptr);
+    pCap->Release();
+
+    LARGE_INTEGER zero = {};
+    pMem->Seek(zero, STREAM_SEEK_SET, nullptr);
+    STATSTG stg = {};
+    pMem->Stat(&stg, STATFLAG_NONAME);
+    ULONG dataLen = static_cast<ULONG>(stg.cbSize.QuadPart);
+    std::vector<BYTE> pcm(dataLen);
+    ULONG nRead = 0;
+    pMem->Read(pcm.data(), dataLen, &nRead);
+    pSS->Release();
+    pMem->Release();
+
+    if (nRead < 2) { CoUninitialize(); return 0; }
+
+    auto* smp    = reinterpret_cast<int16_t*>(pcm.data());
+    ULONG nSamps = nRead / 2;
+    for (ULONG i = 0; i < nSamps; ++i)
+    {
+        float s  = smp[i] * gain / 32767.0f;
+        smp[i]   = static_cast<int16_t>(std::tanh(s) * 32767.0f);
+    }
+
+    UINT devIdx = WAVE_MAPPER;
+    if (!outId.empty())
+        devIdx = static_cast<UINT>(std::atoi(outId.c_str()));
+
+    HWAVEOUT hWO = nullptr;
+    if (waveOutOpen(&hWO, devIdx, &wfx, 0, 0, CALLBACK_NULL) == MMSYSERR_NOERROR)
+    {
+        WAVEHDR hdr        = {};
+        hdr.lpData         = reinterpret_cast<LPSTR>(pcm.data());
+        hdr.dwBufferLength = nRead;
+        waveOutPrepareHeader(hWO, &hdr, sizeof(hdr));
+        waveOutWrite(hWO, &hdr, sizeof(hdr));
+
+        DWORD t0 = GetTickCount();
+        while (!(hdr.dwFlags & WHDR_DONE) && GetTickCount() - t0 < 10000)
+            Sleep(20);
+
+        waveOutUnprepareHeader(hWO, &hdr, sizeof(hdr));
+        waveOutClose(hWO);
+    }
+
+    CoUninitialize();
+    return 0;
+}
+
 // MumbleLink — player identity
 static HANDLE g_MumbleFileMap = nullptr;
 static const Mumble::Data* g_MumbleData = nullptr;
@@ -658,6 +779,14 @@ static void SpeakText(const wchar_t* text)
 
     if (g_pVoice)
     {
+        if (g_TtsVolume > 100 && !g_IsWine)
+        {
+            auto* job = new BoostSpeakJob{std::wstring(text), g_TtsVolume / 100.0f};
+            HANDLE h = CreateThread(nullptr, 0, BoostSpeakThread, job, 0, nullptr);
+            if (h) CloseHandle(h);
+            else delete job;
+            return;
+        }
         HRESULT hr = g_pVoice->Speak(text, SPF_ASYNC | SPF_IS_NOT_XML, nullptr);
         if (SUCCEEDED(hr)) return;
 
@@ -2387,7 +2516,7 @@ static void LoadSettings()
             g_TtsVoiceTokenId    = tts.value("voiceTokenId",  "");
             g_TtsOutputTokenId   = tts.value("outputTokenId", "");
             g_TtsVolume          = tts.value("volume", 100);
-            g_TtsVolume          = std::clamp(g_TtsVolume, 0, 100);
+            g_TtsVolume          = std::clamp(g_TtsVolume, 0, 300);
             g_TtsRate            = tts.value("rate", 0);
             g_TtsRate            = std::clamp(g_TtsRate, -10, 10);
             {
@@ -2746,7 +2875,7 @@ static void InitSAPI()
             }
         }
 
-        g_pVoice->SetVolume(static_cast<USHORT>(g_TtsVolume));
+        g_pVoice->SetVolume(static_cast<USHORT>(std::min(g_TtsVolume, 100)));
         g_pVoice->SetRate(std::clamp(g_TtsRate, -10, 10));
         g_API->Log(LOGL_INFO, "GW2Accessibility", "[TTS] SAPI voice initialized successfully");
     }
@@ -4452,10 +4581,10 @@ static void OnOptionsRender()
             // Volume slider
             {
                 ImGui::SetNextItemWidth(300.0f);
-                if (ImGui::SliderInt("Volume##ttsvolume", &g_TtsVolume, 0, 100))
+                if (ImGui::SliderInt("Volume (>100 = PCM boost)##ttsvolume", &g_TtsVolume, 0, 300))
                 {
-                    g_TtsVolume = std::clamp(g_TtsVolume, 0, 100);
-                    if (g_pVoice) g_pVoice->SetVolume(static_cast<USHORT>(g_TtsVolume));
+                    g_TtsVolume = std::clamp(g_TtsVolume, 0, 300);
+                    if (g_pVoice) g_pVoice->SetVolume(static_cast<USHORT>(std::min(g_TtsVolume, 100)));
                     changed = true;
                 }
             }
