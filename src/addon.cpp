@@ -3711,24 +3711,18 @@ static void OnRender()
         }
     }
 
-    if (g_CrosshairEnabled)
+    if (g_CrosshairEnabled && (g_CrosshairShowHorizontal || g_CrosshairShowVertical))
     {
         ImDrawList* dl = ImGui::GetOverlayDrawList();
         ImVec2 mousePos = ImGui::GetMousePos();
         ImVec2 displaySize = ImGui::GetIO().DisplaySize;
         ImU32 color = ImGui::GetColorU32(ImVec4(g_CrosshairColor[0], g_CrosshairColor[1], g_CrosshairColor[2], g_CrosshairColor[3]));
+        // Full-screen lines rely on the draw list clipping to the display
+        float ext = g_CrosshairFullScreen ? displaySize.x + displaySize.y : g_CrosshairLength;
         if (g_CrosshairShowHorizontal)
-        {
-            float x0 = g_CrosshairFullScreen ? 0.0f : mousePos.x - g_CrosshairLength;
-            float x1 = g_CrosshairFullScreen ? displaySize.x : mousePos.x + g_CrosshairLength;
-            dl->AddLine(ImVec2(x0, mousePos.y), ImVec2(x1, mousePos.y), color, g_CrosshairThickness);
-        }
+            dl->AddLine(ImVec2(mousePos.x - ext, mousePos.y), ImVec2(mousePos.x + ext, mousePos.y), color, g_CrosshairThickness);
         if (g_CrosshairShowVertical)
-        {
-            float y0 = g_CrosshairFullScreen ? 0.0f : mousePos.y - g_CrosshairLength;
-            float y1 = g_CrosshairFullScreen ? displaySize.y : mousePos.y + g_CrosshairLength;
-            dl->AddLine(ImVec2(mousePos.x, y0), ImVec2(mousePos.x, y1), color, g_CrosshairThickness);
-        }
+            dl->AddLine(ImVec2(mousePos.x, mousePos.y - ext), ImVec2(mousePos.x, mousePos.y + ext), color, g_CrosshairThickness);
     }
 
     // Test icon toggle: show Necrosis icon so user can configure position/size/opacity
