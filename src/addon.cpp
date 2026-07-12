@@ -66,6 +66,11 @@ static bool g_Enabled = true;
 static bool g_HoldMode = false;
 static bool g_CrosshairEnabled = false;
 static float g_CrosshairColor[4] = {1.0f, 0.0f, 0.0f, 1.0f};
+static bool g_CrosshairShowHorizontal = true;
+static bool g_CrosshairShowVertical = true;
+static bool g_CrosshairFullScreen = true;
+static float g_CrosshairLength = 150.0f;
+static float g_CrosshairThickness = 2.0f;
 
 // ── Active Mechanic Icons ────────────────────────────────────────────────────
 
@@ -2294,6 +2299,11 @@ static void SaveSettings()
     j["holdMode"] = g_HoldMode;
     j["crosshairEnabled"] = g_CrosshairEnabled;
     j["crosshairColor"] = { g_CrosshairColor[0], g_CrosshairColor[1], g_CrosshairColor[2], g_CrosshairColor[3] };
+    j["crosshairShowHorizontal"] = g_CrosshairShowHorizontal;
+    j["crosshairShowVertical"] = g_CrosshairShowVertical;
+    j["crosshairFullScreen"] = g_CrosshairFullScreen;
+    j["crosshairLength"] = g_CrosshairLength;
+    j["crosshairThickness"] = g_CrosshairThickness;
     j["keybindOverlayEnabled"] = g_KeybindOverlayEnabled;
     j["keybindVisibility"] = g_KeybindVisibility;
     j["keybindShowMovement"]   = g_KeybindShowMovement;
@@ -2421,6 +2431,11 @@ static void LoadSettings()
         if (chColor.is_array() && chColor.size() >= 4)
             for (int i = 0; i < 4; i++)
                 g_CrosshairColor[i] = chColor[i].get<float>();
+        g_CrosshairShowHorizontal = j.value("crosshairShowHorizontal", true);
+        g_CrosshairShowVertical = j.value("crosshairShowVertical", true);
+        g_CrosshairFullScreen = j.value("crosshairFullScreen", true);
+        g_CrosshairLength = j.value("crosshairLength", 150.0f);
+        g_CrosshairThickness = j.value("crosshairThickness", 2.0f);
         g_KeybindOverlayEnabled = j.value("keybindOverlayEnabled", false);
         g_KeybindVisibility = j.value("keybindVisibility", KV_Always);
         g_KeybindShowMovement   = j.value("keybindShowMovement",   true);
@@ -3702,9 +3717,18 @@ static void OnRender()
         ImVec2 mousePos = ImGui::GetMousePos();
         ImVec2 displaySize = ImGui::GetIO().DisplaySize;
         ImU32 color = ImGui::GetColorU32(ImVec4(g_CrosshairColor[0], g_CrosshairColor[1], g_CrosshairColor[2], g_CrosshairColor[3]));
-        float thickness = 2.0f;
-        dl->AddLine(ImVec2(0.0f, mousePos.y), ImVec2(displaySize.x, mousePos.y), color, thickness);
-        dl->AddLine(ImVec2(mousePos.x, 0.0f), ImVec2(mousePos.x, displaySize.y), color, thickness);
+        if (g_CrosshairShowHorizontal)
+        {
+            float x0 = g_CrosshairFullScreen ? 0.0f : mousePos.x - g_CrosshairLength;
+            float x1 = g_CrosshairFullScreen ? displaySize.x : mousePos.x + g_CrosshairLength;
+            dl->AddLine(ImVec2(x0, mousePos.y), ImVec2(x1, mousePos.y), color, g_CrosshairThickness);
+        }
+        if (g_CrosshairShowVertical)
+        {
+            float y0 = g_CrosshairFullScreen ? 0.0f : mousePos.y - g_CrosshairLength;
+            float y1 = g_CrosshairFullScreen ? displaySize.y : mousePos.y + g_CrosshairLength;
+            dl->AddLine(ImVec2(mousePos.x, y0), ImVec2(mousePos.x, y1), color, g_CrosshairThickness);
+        }
     }
 
     // Test icon toggle: show Necrosis icon so user can configure position/size/opacity
@@ -4707,6 +4731,12 @@ static void OnOptionsRender()
         if (g_CrosshairEnabled)
         {
             ImGui::Indent();
+            changed |= ImGui::Checkbox("Horizontal line##crosshair", &g_CrosshairShowHorizontal);
+            changed |= ImGui::Checkbox("Vertical line##crosshair", &g_CrosshairShowVertical);
+            changed |= ImGui::Checkbox("Full screen lines##crosshair", &g_CrosshairFullScreen);
+            if (!g_CrosshairFullScreen)
+                changed |= ImGui::SliderFloat("Line length##crosshair", &g_CrosshairLength, 10.0f, 1000.0f, "%.0f px");
+            changed |= ImGui::SliderFloat("Thickness##crosshair", &g_CrosshairThickness, 1.0f, 10.0f, "%.1f px");
             changed |= ImGui::ColorEdit4("Crosshair Color", g_CrosshairColor);
             ImGui::Unindent();
         }
