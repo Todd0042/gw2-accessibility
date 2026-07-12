@@ -4719,8 +4719,18 @@ static void OnOptionsRender()
             ImGui::Indent();
             changed |= ImGui::Checkbox("Full screen lines##crosshair", &g_CrosshairFullScreen);
             if (!g_CrosshairFullScreen)
-                changed |= ImGui::SliderFloat("Line length##crosshair", &g_CrosshairLength, 10.0f, 1000.0f, "%.0f px");
-            changed |= ImGui::SliderFloat("Thickness##crosshair", &g_CrosshairThickness, 1.0f, 10.0f, "%.1f px");
+            {
+                if (ImGui::SliderFloat("Line length##crosshair", &g_CrosshairLength, 10.0f, 1000.0f, "%.1f px"))
+                {
+                    g_CrosshairLength = roundf(g_CrosshairLength * 2.0f) * 0.5f;
+                    changed = true;
+                }
+            }
+            if (ImGui::SliderFloat("Thickness##crosshair", &g_CrosshairThickness, 1.0f, 10.0f, "%.1f px"))
+            {
+                g_CrosshairThickness = roundf(g_CrosshairThickness * 2.0f) * 0.5f;
+                changed = true;
+            }
             changed |= ImGui::ColorEdit4("Crosshair Color", g_CrosshairColor);
             ImGui::Unindent();
         }
