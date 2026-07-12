@@ -66,6 +66,9 @@ static bool g_Enabled = true;
 static bool g_HoldMode = false;
 static bool g_CrosshairEnabled = false;
 static float g_CrosshairColor[4] = {1.0f, 0.0f, 0.0f, 1.0f};
+static bool g_CursorDotEnabled = false;
+static float g_CursorDotRadius = 2.0f;
+static float g_CursorDotColor[4] = {1.0f, 0.0f, 0.0f, 1.0f};
 
 // ── Active Mechanic Icons ────────────────────────────────────────────────────
 
@@ -2294,6 +2297,9 @@ static void SaveSettings()
     j["holdMode"] = g_HoldMode;
     j["crosshairEnabled"] = g_CrosshairEnabled;
     j["crosshairColor"] = { g_CrosshairColor[0], g_CrosshairColor[1], g_CrosshairColor[2], g_CrosshairColor[3] };
+    j["cursorDotEnabled"] = g_CursorDotEnabled;
+    j["cursorDotRadius"] = g_CursorDotRadius;
+    j["cursorDotColor"] = { g_CursorDotColor[0], g_CursorDotColor[1], g_CursorDotColor[2], g_CursorDotColor[3] };
     j["keybindOverlayEnabled"] = g_KeybindOverlayEnabled;
     j["keybindVisibility"] = g_KeybindVisibility;
     j["keybindShowMovement"]   = g_KeybindShowMovement;
@@ -2421,6 +2427,12 @@ static void LoadSettings()
         if (chColor.is_array() && chColor.size() >= 4)
             for (int i = 0; i < 4; i++)
                 g_CrosshairColor[i] = chColor[i].get<float>();
+        g_CursorDotEnabled = j.value("cursorDotEnabled", false);
+        g_CursorDotRadius = j.value("cursorDotRadius", 2.0f);
+        auto& dotColor = j["cursorDotColor"];
+        if (dotColor.is_array() && dotColor.size() >= 4)
+            for (int i = 0; i < 4; i++)
+                g_CursorDotColor[i] = dotColor[i].get<float>();
         g_KeybindOverlayEnabled = j.value("keybindOverlayEnabled", false);
         g_KeybindVisibility = j.value("keybindVisibility", KV_Always);
         g_KeybindShowMovement   = j.value("keybindShowMovement",   true);
@@ -3707,6 +3719,14 @@ static void OnRender()
         dl->AddLine(ImVec2(mousePos.x, 0.0f), ImVec2(mousePos.x, displaySize.y), color, thickness);
     }
 
+    if (g_CursorDotEnabled)
+    {
+        ImDrawList* dl = ImGui::GetOverlayDrawList();
+        ImVec2 mousePos = ImGui::GetMousePos();
+        ImU32 dotColor = ImGui::GetColorU32(ImVec4(g_CursorDotColor[0], g_CursorDotColor[1], g_CursorDotColor[2], g_CursorDotColor[3]));
+        dl->AddCircleFilled(mousePos, g_CursorDotRadius, dotColor);
+    }
+
     // Test icon toggle: show Necrosis icon so user can configure position/size/opacity
     if (g_ShowTestIcon)
     {
@@ -4708,6 +4728,15 @@ static void OnOptionsRender()
         {
             ImGui::Indent();
             changed |= ImGui::ColorEdit4("Crosshair Color", g_CrosshairColor);
+            ImGui::Unindent();
+        }
+
+        changed |= ImGui::Checkbox("Show Cursor Dot", &g_CursorDotEnabled);
+        if (g_CursorDotEnabled)
+        {
+            ImGui::Indent();
+            changed |= ImGui::SliderFloat("Dot size##cursordot", &g_CursorDotRadius, 1.0f, 10.0f, "%.1f px");
+            changed |= ImGui::ColorEdit4("Dot Color##cursordot", g_CursorDotColor);
             ImGui::Unindent();
         }
 
