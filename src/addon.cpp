@@ -4752,8 +4752,16 @@ static void OnOptionsRender()
         if (g_CursorCircleEnabled)
         {
             ImGui::Indent();
-            changed |= ImGui::SliderFloat("Radius##circle", &g_CursorCircleRadius, 5.0f, 300.0f, "%.0f px");
-            changed |= ImGui::SliderFloat("Outline thickness##circle", &g_CursorCircleThickness, 1.0f, 10.0f, "%.1f px");
+            if (ImGui::SliderFloat("Radius##circle", &g_CursorCircleRadius, 5.0f, 300.0f, "%.1f px"))
+            {
+                g_CursorCircleRadius = roundf(g_CursorCircleRadius * 2.0f) * 0.5f;
+                changed = true;
+            }
+            if (ImGui::SliderFloat("Outline thickness##circle", &g_CursorCircleThickness, 1.0f, 10.0f, "%.1f px"))
+            {
+                g_CursorCircleThickness = roundf(g_CursorCircleThickness * 2.0f) * 0.5f;
+                changed = true;
+            }
             changed |= ImGui::ColorEdit4("Outline Color##circle", g_CursorCircleColor);
             changed |= ImGui::Checkbox("Fill##circle", &g_CursorCircleFillEnabled);
             if (g_CursorCircleFillEnabled)
