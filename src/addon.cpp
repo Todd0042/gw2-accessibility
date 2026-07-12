@@ -4735,7 +4735,11 @@ static void OnOptionsRender()
         if (g_CursorDotEnabled)
         {
             ImGui::Indent();
-            changed |= ImGui::SliderFloat("Dot size##cursordot", &g_CursorDotRadius, 1.0f, 10.0f, "%.1f px");
+            if (ImGui::SliderFloat("Dot size##cursordot", &g_CursorDotRadius, 1.0f, 10.0f, "%.1f px"))
+            {
+                g_CursorDotRadius = roundf(g_CursorDotRadius * 2.0f) * 0.5f;
+                changed = true;
+            }
             changed |= ImGui::ColorEdit4("Dot Color##cursordot", g_CursorDotColor);
             ImGui::Unindent();
         }
