@@ -66,6 +66,12 @@ static bool g_Enabled = true;
 static bool g_HoldMode = false;
 static bool g_CrosshairEnabled = false;
 static float g_CrosshairColor[4] = {1.0f, 0.0f, 0.0f, 1.0f};
+static bool g_CursorCircleEnabled = false;
+static float g_CursorCircleRadius = 40.0f;
+static float g_CursorCircleThickness = 2.0f;
+static float g_CursorCircleColor[4] = {1.0f, 0.0f, 0.0f, 1.0f};
+static bool g_CursorCircleFillEnabled = false;
+static float g_CursorCircleFillColor[4] = {1.0f, 0.0f, 0.0f, 0.25f};
 
 // ── Active Mechanic Icons ────────────────────────────────────────────────────
 
@@ -2294,6 +2300,12 @@ static void SaveSettings()
     j["holdMode"] = g_HoldMode;
     j["crosshairEnabled"] = g_CrosshairEnabled;
     j["crosshairColor"] = { g_CrosshairColor[0], g_CrosshairColor[1], g_CrosshairColor[2], g_CrosshairColor[3] };
+    j["cursorCircleEnabled"] = g_CursorCircleEnabled;
+    j["cursorCircleRadius"] = g_CursorCircleRadius;
+    j["cursorCircleThickness"] = g_CursorCircleThickness;
+    j["cursorCircleColor"] = { g_CursorCircleColor[0], g_CursorCircleColor[1], g_CursorCircleColor[2], g_CursorCircleColor[3] };
+    j["cursorCircleFillEnabled"] = g_CursorCircleFillEnabled;
+    j["cursorCircleFillColor"] = { g_CursorCircleFillColor[0], g_CursorCircleFillColor[1], g_CursorCircleFillColor[2], g_CursorCircleFillColor[3] };
     j["keybindOverlayEnabled"] = g_KeybindOverlayEnabled;
     j["keybindVisibility"] = g_KeybindVisibility;
     j["keybindShowMovement"]   = g_KeybindShowMovement;
@@ -2421,6 +2433,18 @@ static void LoadSettings()
         if (chColor.is_array() && chColor.size() >= 4)
             for (int i = 0; i < 4; i++)
                 g_CrosshairColor[i] = chColor[i].get<float>();
+        g_CursorCircleEnabled = j.value("cursorCircleEnabled", false);
+        g_CursorCircleRadius = j.value("cursorCircleRadius", 40.0f);
+        g_CursorCircleThickness = j.value("cursorCircleThickness", 2.0f);
+        auto& ccColor = j["cursorCircleColor"];
+        if (ccColor.is_array() && ccColor.size() >= 4)
+            for (int i = 0; i < 4; i++)
+                g_CursorCircleColor[i] = ccColor[i].get<float>();
+        g_CursorCircleFillEnabled = j.value("cursorCircleFillEnabled", false);
+        auto& ccFillColor = j["cursorCircleFillColor"];
+        if (ccFillColor.is_array() && ccFillColor.size() >= 4)
+            for (int i = 0; i < 4; i++)
+                g_CursorCircleFillColor[i] = ccFillColor[i].get<float>();
         g_KeybindOverlayEnabled = j.value("keybindOverlayEnabled", false);
         g_KeybindVisibility = j.value("keybindVisibility", KV_Always);
         g_KeybindShowMovement   = j.value("keybindShowMovement",   true);
@@ -3707,6 +3731,19 @@ static void OnRender()
         dl->AddLine(ImVec2(mousePos.x, 0.0f), ImVec2(mousePos.x, displaySize.y), color, thickness);
     }
 
+    if (g_CursorCircleEnabled)
+    {
+        ImDrawList* dl = ImGui::GetOverlayDrawList();
+        ImVec2 mousePos = ImGui::GetMousePos();
+        if (g_CursorCircleFillEnabled)
+        {
+            ImU32 fillColor = ImGui::GetColorU32(ImVec4(g_CursorCircleFillColor[0], g_CursorCircleFillColor[1], g_CursorCircleFillColor[2], g_CursorCircleFillColor[3]));
+            dl->AddCircleFilled(mousePos, g_CursorCircleRadius, fillColor);
+        }
+        ImU32 outlineColor = ImGui::GetColorU32(ImVec4(g_CursorCircleColor[0], g_CursorCircleColor[1], g_CursorCircleColor[2], g_CursorCircleColor[3]));
+        dl->AddCircle(mousePos, g_CursorCircleRadius, outlineColor, 0, g_CursorCircleThickness);
+    }
+
     // Test icon toggle: show Necrosis icon so user can configure position/size/opacity
     if (g_ShowTestIcon)
     {
@@ -4708,6 +4745,19 @@ static void OnOptionsRender()
         {
             ImGui::Indent();
             changed |= ImGui::ColorEdit4("Crosshair Color", g_CrosshairColor);
+            ImGui::Unindent();
+        }
+
+        changed |= ImGui::Checkbox("Show Circle", &g_CursorCircleEnabled);
+        if (g_CursorCircleEnabled)
+        {
+            ImGui::Indent();
+            changed |= ImGui::SliderFloat("Radius##circle", &g_CursorCircleRadius, 5.0f, 300.0f, "%.0f px");
+            changed |= ImGui::SliderFloat("Outline thickness##circle", &g_CursorCircleThickness, 1.0f, 10.0f, "%.1f px");
+            changed |= ImGui::ColorEdit4("Outline Color##circle", g_CursorCircleColor);
+            changed |= ImGui::Checkbox("Fill##circle", &g_CursorCircleFillEnabled);
+            if (g_CursorCircleFillEnabled)
+                changed |= ImGui::ColorEdit4("Fill Color##circle", g_CursorCircleFillColor);
             ImGui::Unindent();
         }
 
