@@ -66,6 +66,7 @@ static bool g_Enabled = true;
 static bool g_HoldMode = false;
 static bool g_CrosshairEnabled = false;
 static float g_CrosshairColor[4] = {1.0f, 0.0f, 0.0f, 1.0f};
+static bool g_CrosshairOnlyWhenHidden = true;   // default: only show when the game cursor is hidden
 
 // ── Active Mechanic Icons ────────────────────────────────────────────────────
 
@@ -2294,6 +2295,7 @@ static void SaveSettings()
     j["holdMode"] = g_HoldMode;
     j["crosshairEnabled"] = g_CrosshairEnabled;
     j["crosshairColor"] = { g_CrosshairColor[0], g_CrosshairColor[1], g_CrosshairColor[2], g_CrosshairColor[3] };
+    j["crosshairOnlyWhenHidden"] = g_CrosshairOnlyWhenHidden;
     j["keybindOverlayEnabled"] = g_KeybindOverlayEnabled;
     j["keybindVisibility"] = g_KeybindVisibility;
     j["keybindShowMovement"]   = g_KeybindShowMovement;
@@ -2421,6 +2423,7 @@ static void LoadSettings()
         if (chColor.is_array() && chColor.size() >= 4)
             for (int i = 0; i < 4; i++)
                 g_CrosshairColor[i] = chColor[i].get<float>();
+        g_CrosshairOnlyWhenHidden = j.value("crosshairOnlyWhenHidden", true);
         g_KeybindOverlayEnabled = j.value("keybindOverlayEnabled", false);
         g_KeybindVisibility = j.value("keybindVisibility", KV_Always);
         g_KeybindShowMovement   = j.value("keybindShowMovement",   true);
@@ -3698,13 +3701,22 @@ static void OnRender()
 
     if (g_CrosshairEnabled)
     {
-        ImDrawList* dl = ImGui::GetOverlayDrawList();
-        ImVec2 mousePos = ImGui::GetMousePos();
-        ImVec2 displaySize = ImGui::GetIO().DisplaySize;
-        ImU32 color = ImGui::GetColorU32(ImVec4(g_CrosshairColor[0], g_CrosshairColor[1], g_CrosshairColor[2], g_CrosshairColor[3]));
-        float thickness = 2.0f;
-        dl->AddLine(ImVec2(0.0f, mousePos.y), ImVec2(displaySize.x, mousePos.y), color, thickness);
-        dl->AddLine(ImVec2(mousePos.x, 0.0f), ImVec2(mousePos.x, displaySize.y), color, thickness);
+        bool shouldDraw = true;
+        if (g_CrosshairOnlyWhenHidden)
+        {
+            CURSORINFO ci = { sizeof(CURSORINFO) };
+            shouldDraw = GetCursorInfo(&ci) && !(ci.flags & CURSOR_SHOWING);
+        }
+        if (shouldDraw)
+        {
+            ImDrawList* dl = ImGui::GetOverlayDrawList();
+            ImVec2 mousePos = ImGui::GetMousePos();
+            ImVec2 displaySize = ImGui::GetIO().DisplaySize;
+            ImU32 color = ImGui::GetColorU32(ImVec4(g_CrosshairColor[0], g_CrosshairColor[1], g_CrosshairColor[2], g_CrosshairColor[3]));
+            float thickness = 2.0f;
+            dl->AddLine(ImVec2(0.0f, mousePos.y), ImVec2(displaySize.x, mousePos.y), color, thickness);
+            dl->AddLine(ImVec2(mousePos.x, 0.0f), ImVec2(mousePos.x, displaySize.y), color, thickness);
+        }
     }
 
     // Test icon toggle: show Necrosis icon so user can configure position/size/opacity
@@ -4708,6 +4720,7 @@ static void OnOptionsRender()
         {
             ImGui::Indent();
             changed |= ImGui::ColorEdit4("Crosshair Color", g_CrosshairColor);
+            changed |= ImGui::Checkbox("Only show when cursor is hidden", &g_CrosshairOnlyWhenHidden);
             ImGui::Unindent();
         }
 
