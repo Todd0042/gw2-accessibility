@@ -3735,6 +3735,12 @@ static void OnRender()
     {
         ImDrawList* dl = ImGui::GetOverlayDrawList();
         ImVec2 mousePos = ImGui::GetMousePos();
+        // Force anti-aliased edges for the circle regardless of the host ImGui style.
+        // Use geometric AA (not the texture path) so it is backend-independent; restore
+        // the draw list flags afterwards so other overlay drawing is unaffected.
+        ImDrawListFlags savedFlags = dl->Flags;
+        dl->Flags |=  ImDrawListFlags_AntiAliasedLines | ImDrawListFlags_AntiAliasedFill;
+        dl->Flags &= ~ImDrawListFlags_AntiAliasedLinesUseTex;
         if (g_CursorCircleFillEnabled)
         {
             ImU32 fillColor = ImGui::GetColorU32(ImVec4(g_CursorCircleFillColor[0], g_CursorCircleFillColor[1], g_CursorCircleFillColor[2], g_CursorCircleFillColor[3]));
@@ -3742,6 +3748,7 @@ static void OnRender()
         }
         ImU32 outlineColor = ImGui::GetColorU32(ImVec4(g_CursorCircleColor[0], g_CursorCircleColor[1], g_CursorCircleColor[2], g_CursorCircleColor[3]));
         dl->AddCircle(mousePos, g_CursorCircleRadius, outlineColor, 0, g_CursorCircleThickness);
+        dl->Flags = savedFlags;
     }
 
     // Test icon toggle: show Necrosis icon so user can configure position/size/opacity
