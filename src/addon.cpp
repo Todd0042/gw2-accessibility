@@ -58,12 +58,14 @@ struct ConfigPosition {
 };
 
 static ConfigPosition g_Positions[2] = {
-    {AnchorPoint::Center, 0.0f, 0.0f},
-    {AnchorPoint::BottomCenter, 0.0f, -2.0f}
+    {AnchorPoint::BottomCenter, 0.0f, -2.0f},
+    {AnchorPoint::Center, 0.0f, 10.1f}
 };
 static int g_ActivePosition = 0;
+static int g_LastMoveX = -1, g_LastMoveY = -1;
 static bool g_Enabled = true;
 static bool g_HoldMode = false;
+static bool g_SnapToAOnUserMove = true;
 static bool g_CrosshairEnabled = false;
 static float g_CrosshairColor[4] = {1.0f, 0.0f, 0.0f, 1.0f};
 
@@ -2292,6 +2294,7 @@ static void SaveSettings()
     }
 
     j["holdMode"] = g_HoldMode;
+    j["snapToAOnUserMove"] = g_SnapToAOnUserMove;
     j["crosshairEnabled"] = g_CrosshairEnabled;
     j["crosshairColor"] = { g_CrosshairColor[0], g_CrosshairColor[1], g_CrosshairColor[2], g_CrosshairColor[3] };
     j["keybindOverlayEnabled"] = g_KeybindOverlayEnabled;
@@ -2478,6 +2481,7 @@ static void LoadSettings()
 
         g_FoodUtilityExpiryEnabled = j.value("foodUtilityExpiry", false);
         g_ReadyCheckTtsEnabled = j.value("readyCheckTts", false);
+        g_SnapToAOnUserMove = j.value("snapToAOnUserMove", true);
         g_AllyDownedEnabled = j.value("allyDownedEnabled", false);
         g_AllyDownedSquadOnly = j.value("allyDownedSquadOnly", false);
         g_TofusToggle = j.value("tofusToggle", false);
@@ -2646,10 +2650,23 @@ static void MoveToPosition(const ConfigPosition& pos)
     int x, y;
     GetTargetPosition(pos, x, y);
     SetCursorPos(x, y);
+    g_LastMoveX = x;
+    g_LastMoveY = y;
 }
 
 static void ToggleMousePosition()
 {
+    if (g_SnapToAOnUserMove)
+    {
+        POINT cur;
+        GetCursorPos(&cur);
+        if (cur.x != g_LastMoveX || cur.y != g_LastMoveY)
+        {
+            g_ActivePosition = 0;
+            MoveToPosition(g_Positions[0]);
+            return;
+        }
+    }
     g_ActivePosition = 1 - g_ActivePosition;
     MoveToPosition(g_Positions[g_ActivePosition]);
 }
@@ -2667,8 +2684,15 @@ static void OnMouseToggleKeybind(const char* aIdentifier, bool aIsRelease)
         }
         else
         {
-            g_ActivePosition = 1;
-            MoveToPosition(g_Positions[1]);
+            if (g_SnapToAOnUserMove)
+            {
+                POINT cur;
+                GetCursorPos(&cur);
+                g_ActivePosition = (cur.x != g_LastMoveX || cur.y != g_LastMoveY) ? 0 : 1;
+            }
+            else
+                g_ActivePosition = 1;
+            MoveToPosition(g_Positions[g_ActivePosition]);
         }
     }
     else
@@ -4386,48 +4410,65 @@ static void OnOptionsRender()
         ImGui::Separator();
 
         changed |= ImGui::Checkbox("Enable", &g_Enabled);
+        ImGui::SameLine();
         changed |= ImGui::Checkbox("Hold Mode", &g_HoldMode);
+        ImGui::SameLine();
+        changed |= ImGui::Checkbox("Auto-Return", &g_SnapToAOnUserMove);
         ImGui::TextDisabled(g_HoldMode
             ? "Hold keybind to go to Position B, release to return to Position A"
             : "Press keybind to toggle between Position A and B");
+        if (g_SnapToAOnUserMove)
+            ImGui::TextDisabled("  If mouse moved since last snap: go to Position A instead of toggling");
 
-        static int s_EditingSlot = 0;
-        const char* slotNames[] = { "Position A (toggle off)", "Position B (toggle on)" };
-        ImGui::Combo("Edit Slot", &s_EditingSlot, slotNames, 2);
-
-        ImGui::Indent();
-        ConfigPosition& pos = g_Positions[s_EditingSlot];
-
-        int anchorIdx = static_cast<int>(pos.anchor);
-        char mouseAnchorLabel[64];
-        snprintf(mouseAnchorLabel, sizeof(mouseAnchorLabel), "Position %s Anchor", s_EditingSlot == 0 ? "A" : "B");
-        if (ImGui::Combo(mouseAnchorLabel, &anchorIdx, g_AnchorNames,
-                         static_cast<int>(AnchorPoint::COUNT)))
+        // ── Side-by-side A / B editors ──
+        float colW = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
+        for (int slot = 0; slot < 2; ++slot)
         {
-            pos.anchor = static_cast<AnchorPoint>(anchorIdx);
+            if (slot > 0) ImGui::SameLine();
+            ImGui::BeginChild(slot == 0 ? "##posA" : "##posB", ImVec2(colW, 0), true);
+            ImGui::TextColored(slot == 0 ? ImVec4(0.4f, 0.8f, 1.0f, 1.0f) : ImVec4(1.0f, 0.6f, 0.3f, 1.0f),
+                               "Position %s", slot == 0 ? "A" : "B");
+            ImGui::Separator();
+
+            ConfigPosition& pos = g_Positions[slot];
+            int anchorIdx = static_cast<int>(pos.anchor);
+            char label[64];
+            snprintf(label, sizeof(label), "Anchor##pos%d", slot);
+            if (ImGui::Combo(label, &anchorIdx, g_AnchorNames, static_cast<int>(AnchorPoint::COUNT)))
+            {
+                pos.anchor = static_cast<AnchorPoint>(anchorIdx);
+                changed = true;
+            }
+
+            snprintf(label, sizeof(label), "X%%##pos%d", slot);
+            changed |= ImGui::SliderFloat(label, &pos.offsetXPct, -50.0f, 50.0f, "%.1f%%");
+            snprintf(label, sizeof(label), "Y%%##pos%d", slot);
+            changed |= ImGui::SliderFloat(label, &pos.offsetYPct, -50.0f, 50.0f, "%.1f%%");
+
+            snprintf(label, sizeof(label), "Test##pos%d", slot);
+            if (ImGui::Button(label))
+            {
+                if (g_Enabled)
+                    MoveToPosition(pos);
+            }
+
+            ImGui::EndChild();
+        }
+
+        // ── Action buttons ──
+        ImGui::Spacing();
+        if (ImGui::Button("Swap A <-> B"))
+        {
+            std::swap(g_Positions[0], g_Positions[1]);
+            g_ActivePosition = 1 - g_ActivePosition;
             changed = true;
         }
-
-        char mouseLabelX[64], mouseLabelY[64];
-        snprintf(mouseLabelX, sizeof(mouseLabelX), "Position %s Offset X %%", s_EditingSlot == 0 ? "A" : "B");
-        snprintf(mouseLabelY, sizeof(mouseLabelY), "Position %s Offset Y %%", s_EditingSlot == 0 ? "A" : "B");
-        changed |= ImGui::SliderFloat(mouseLabelX, &pos.offsetXPct, -50.0f, 50.0f, "%.1f%%");
-        changed |= ImGui::SliderFloat(mouseLabelY, &pos.offsetYPct, -50.0f, 50.0f, "%.1f%%");
-
-        if (ImGui::Button("Test"))
-        {
-            if (g_Enabled)
-                MoveToPosition(pos);
-        }
-        ImGui::Unindent();
-
-        ImGui::Separator();
+        ImGui::SameLine();
         if (ImGui::Button("Toggle Now"))
         {
             if (g_Enabled)
                 ToggleMousePosition();
         }
-
         ImGui::SameLine();
         {
             int x, y;
@@ -4926,7 +4967,7 @@ void AddonUnload()
 
 extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef()
 {
-    static AddonVersion_t s_Version = { 1, 2, 3, 0 };
+    static AddonVersion_t s_Version = { 1, 2, 4, 0 };
 
     static AddonDefinition_t s_Def = {};
     s_Def.Signature  = 897849539; // 0x358418C3 — random 4 bytes, no longer -2
