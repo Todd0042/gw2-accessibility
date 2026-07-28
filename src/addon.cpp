@@ -102,6 +102,9 @@ static bool g_KeybindShowScreenshot = false;
 static bool g_KeybindShowMap        = false;
 static bool g_KeybindShowUI         = false;
 static bool g_KeybindShowTemplates  = false;
+static bool g_KeybindShowBuildTemplates = false;
+static bool g_KeybindShowEquipmentTemplates = false;
+static bool g_KeybindShowFashionTemplates = false;
 static ConfigPosition g_KeybindPosition = {AnchorPoint::MiddleLeft, 0.0f, 0.0f};
 static float g_KeybindOverlayOpacity = 0.4f;
 static bool g_ShowKeybindConfig = false;
@@ -121,6 +124,26 @@ struct KeybindEntry {
 };
 static std::vector<KeybindEntry> g_Keybinds; // populated from XML
 static bool g_KeybindsLoaded = false;
+static std::unordered_map<std::string, std::string> g_KeybindNameMap;    // actionName → display key
+static std::unordered_map<std::string, std::vector<KeybindEntry>> g_KeybindCatMap; // category → entries
+
+static void RebuildKeybindLookup()
+{
+    g_KeybindNameMap.clear();
+    g_KeybindCatMap.clear();
+    for (const auto& kb : g_Keybinds)
+    {
+        std::string keyStr;
+        if (kb.key.empty())
+            keyStr = kb.key2.empty() ? "?" : kb.key2;
+        else if (!kb.key2.empty() && kb.key2 != kb.key)
+            keyStr = kb.key + "/" + kb.key2;
+        else
+            keyStr = kb.key;
+        g_KeybindNameMap[kb.name] = keyStr;
+        g_KeybindCatMap[kb.category].push_back(kb);
+    }
+}
 static std::vector<std::string> g_KeybindFiles; // available XML files
 static int g_KeybindFileIndex = -1; // selected file index
 static std::string g_ManualKeybindPath; // full path for manually selected file
@@ -766,7 +789,8 @@ static DWORD WINAPI BoostSpeakThread(LPVOID param)
         devIdx = static_cast<UINT>(std::atoi(outId.c_str()));
 
     HWAVEOUT hWO = nullptr;
-    if (waveOutOpen(&hWO, devIdx, &wfx, 0, 0, CALLBACK_NULL) == MMSYSERR_NOERROR)
+    HANDLE hEvent = CreateEventA(nullptr, FALSE, FALSE, nullptr);
+    if (waveOutOpen(&hWO, devIdx, &wfx, (DWORD_PTR)hEvent, 0, CALLBACK_EVENT) == MMSYSERR_NOERROR)
     {
         WAVEHDR hdr        = {};
         hdr.lpData         = reinterpret_cast<LPSTR>(pcm.data());
@@ -774,12 +798,15 @@ static DWORD WINAPI BoostSpeakThread(LPVOID param)
         waveOutPrepareHeader(hWO, &hdr, sizeof(hdr));
         waveOutWrite(hWO, &hdr, sizeof(hdr));
 
-        DWORD t0 = GetTickCount();
-        while (!(hdr.dwFlags & WHDR_DONE) && GetTickCount() - t0 < 10000)
-            Sleep(20);
+        WaitForSingleObject(hEvent, 10000);
 
         waveOutUnprepareHeader(hWO, &hdr, sizeof(hdr));
         waveOutClose(hWO);
+        CloseHandle(hEvent);
+    }
+    else if (hEvent)
+    {
+        CloseHandle(hEvent);
     }
 
     cleanup();
@@ -2118,8 +2145,12 @@ static std::string CategorizeAction(const std::string& n)
         return "Targeting";
 
     // ── Templates ────────────────────────────────────────────────────────────
-    if (n.find("Template") != np)
-        return "Templates";
+    if (n.find("Build Template") != np)
+        return "Build Templates";
+    if (n.find("Equipment Template") != np)
+        return "Equipment Templates";
+    if (n.find("Fashion Template") != np)
+        return "Fashion Templates";
 
     // ── Mounts ───────────────────────────────────────────────────────────────
     if (n.find("Mount")        != np || n == "Dismount"       ||
@@ -2314,7 +2345,7 @@ static void LoadKeybindFile(int index)
     g_API->Log(LOGL_INFO, "GW2Accessibility", dbg);
 
     ParseKeybindXml(xmlContent, g_Keybinds);
-
+    RebuildKeybindLookup();
     g_KeybindsLoaded = true;
     snprintf(dbg, sizeof(dbg), "[KEYBINDS] Loaded %zu bindings from %s", g_Keybinds.size(), g_KeybindFiles[index].c_str());
     g_API->Log(LOGL_INFO, "GW2Accessibility", dbg);
@@ -2365,7 +2396,9 @@ static void SaveSettings()
     j["keybindShowScreenshot"] = g_KeybindShowScreenshot;
     j["keybindShowMap"]        = g_KeybindShowMap;
     j["keybindShowUI"]         = g_KeybindShowUI;
-    j["keybindShowTemplates"]  = g_KeybindShowTemplates;
+    j["keybindShowBuildTemplates"] = g_KeybindShowBuildTemplates;
+    j["keybindShowEquipmentTemplates"] = g_KeybindShowEquipmentTemplates;
+    j["keybindShowFashionTemplates"] = g_KeybindShowFashionTemplates;
     j["keybindPositionAnchor"] = static_cast<int>(g_KeybindPosition.anchor);
     j["keybindPositionX"] = g_KeybindPosition.offsetXPct;
     j["keybindPositionY"] = g_KeybindPosition.offsetYPct;
@@ -2493,6 +2526,9 @@ static void LoadSettings()
         g_KeybindShowMap        = j.value("keybindShowMap",        false);
         g_KeybindShowUI         = j.value("keybindShowUI",         false);
         g_KeybindShowTemplates  = j.value("keybindShowTemplates",  false);
+        g_KeybindShowBuildTemplates = j.value("keybindShowBuildTemplates", false);
+        g_KeybindShowEquipmentTemplates = j.value("keybindShowEquipmentTemplates", false);
+        g_KeybindShowFashionTemplates = j.value("keybindShowFashionTemplates", false);
         int keybindAnchor = j.value("keybindPositionAnchor", static_cast<int>(AnchorPoint::MiddleLeft));
         keybindAnchor = std::clamp(keybindAnchor, 0, static_cast<int>(AnchorPoint::COUNT) - 1);
         g_KeybindPosition.anchor = static_cast<AnchorPoint>(keybindAnchor);
@@ -4173,20 +4209,9 @@ static void OnKeybindOverlayRender()
     }
 
     auto findKey = [](const char* actionName) -> std::string {
-        for (const auto& kb : g_Keybinds)
-        {
-            if (kb.name == actionName)
-            {
-                // Primary missing but secondary present (e.g. Jump with only a secondary set)
-                if (kb.key.empty())
-                    return kb.key2.empty() ? "?" : kb.key2;
-                if (!kb.key2.empty() && kb.key2 != kb.key)
-                    return kb.key + "/" + kb.key2;
-                return kb.key;
-            }
-        }
-        // GW2 omits default bindings from the XML export entirely.
-        // These are the standard defaults used when no XML entry exists.
+        auto it = g_KeybindNameMap.find(actionName);
+        if (it != g_KeybindNameMap.end())
+            return it->second;
         static const struct { const char* name; const char* key; } DEFAULTS[] = {
             { "Move Forward",            "W"     },
             { "Move Backward",           "S"     },
@@ -4206,14 +4231,17 @@ static void OnKeybindOverlayRender()
     auto renderCat = [](const char* title, const char* catName) {
         ImGui::TextDisabled(title);
         ImGui::Separator();
-        for (const auto& kb : g_Keybinds)
+        auto it = g_KeybindCatMap.find(catName);
+        if (it != g_KeybindCatMap.end())
         {
-            if (kb.category != catName) continue;
-            if (kb.key.empty() && kb.key2.empty()) continue;
-            if (!kb.key2.empty() && kb.key2 != kb.key)
-                ImGui::Text("%-24s %s/%s", kb.name.c_str(), kb.key.c_str(), kb.key2.c_str());
-            else
-                ImGui::Text("%-24s %s", kb.name.c_str(), kb.key.c_str());
+            for (const auto& kb : it->second)
+            {
+                if (kb.key.empty() && kb.key2.empty()) continue;
+                if (!kb.key2.empty() && kb.key2 != kb.key)
+                    ImGui::Text("%-24s %s/%s", kb.name.c_str(), kb.key.c_str(), kb.key2.c_str());
+                else
+                    ImGui::Text("%-24s %s", kb.name.c_str(), kb.key.c_str());
+            }
         }
         ImGui::Dummy(ImVec2(0, 3));
     };
@@ -4295,8 +4323,12 @@ static void OnKeybindOverlayRender()
     if (g_KeybindShowUI)
         renderCat("UI", "UI");
 
-    if (g_KeybindShowTemplates)
-        renderCat("Templates", "Templates");
+    if (g_KeybindShowBuildTemplates)
+        renderCat("Build Templates", "Build Templates");
+    if (g_KeybindShowEquipmentTemplates)
+        renderCat("Equipment Templates", "Equipment Templates");
+    if (g_KeybindShowFashionTemplates)
+        renderCat("Fashion Templates", "Fashion Templates");
 
     ImGui::PopStyleVar();
     ImGui::End();
@@ -4377,6 +4409,7 @@ static void OnKeybindConfigRender()
                         g_KeybindFileIndex = 0;
                         g_ManualKeybindPath = path;
                         ParseKeybindXml(xmlContent, g_Keybinds);
+                        RebuildKeybindLookup();
                         g_KeybindsLoaded = true;
                     }
                 }
@@ -4418,7 +4451,9 @@ static void OnKeybindConfigRender()
     changed |= ImGui::Checkbox("Screenshot", &g_KeybindShowScreenshot);
     changed |= ImGui::Checkbox("Map",        &g_KeybindShowMap);
     changed |= ImGui::Checkbox("UI",         &g_KeybindShowUI);
-    changed |= ImGui::Checkbox("Templates",  &g_KeybindShowTemplates);
+    changed |= ImGui::Checkbox("Build Templates", &g_KeybindShowBuildTemplates);
+    changed |= ImGui::Checkbox("Equipment Templates", &g_KeybindShowEquipmentTemplates);
+    changed |= ImGui::Checkbox("Fashion Templates", &g_KeybindShowFashionTemplates);
 
     // ── Keybind Viewer ───────────────────────────────────────────────────────
     ImGui::Dummy(ImVec2(0, 6));
@@ -4471,10 +4506,12 @@ static void OnKeybindConfigRender()
             {"Squad",      "Squad"},
             {"Camera",     "Camera"},
             {"Map",        "Map"},
-            {"UI",         "UI"},
-            {"Templates",  "Templates"},
-            {"Screenshot", "Screenshot"},
-            {"General",    "General"},
+            {"UI",               "UI"},
+            {"Build Templates",  "Build Templates"},
+            {"Equipment Templates", "Equipment Templates"},
+            {"Fashion Templates", "Fashion Templates"},
+            {"Screenshot",       "Screenshot"},
+            {"General",          "General"},
         };
         // Two rows of filter buttons so they don't overflow the window
         const int ROW_BREAK = 6; // buttons per row
@@ -5084,7 +5121,7 @@ void AddonUnload()
 
 extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef()
 {
-    static AddonVersion_t s_Version = { 1, 2, 5, 0 };
+    static AddonVersion_t s_Version = { 1, 2, 6, 0 };
 
     static AddonDefinition_t s_Def = {};
     s_Def.Signature  = 897849539; // 0x358418C3 — random 4 bytes, no longer -2
