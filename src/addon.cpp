@@ -80,6 +80,7 @@ static std::unordered_map<unsigned int, Texture_t*> g_IconTextures;
 static std::unordered_map<unsigned int, std::string> g_IconUrlCache;
 static std::unordered_map<unsigned int, DWORD> g_ActiveMechanics;
 static const DWORD g_MechanicIconTimeout = 15000;
+static std::mutex g_SharedMutex;  // protects g_ActiveMechanics, g_ActiveBuffs, g_DebuffNameCache, g_EncounteredEffects
 
 // ── Effect Tracking Manager ──────────────────────────────────────────
 static bool g_ShowEffectManager = false;
@@ -141,7 +142,7 @@ static int  g_LinuxPitch         = 40;
 static int  g_LinuxAmplitude     = 175;
 
 // Derives the Linux home directory from env vars available inside Wine.
-// HOME is often unset in Wine; fall back to parsing WINEPREFIX path.
+// HOME is often unset in Wine; fall back to WINEPREFIX / USER / default.
 static std::string GetLinuxHome()
 {
     char home[512] = {0};
@@ -160,13 +161,23 @@ static std::string GetLinuxHome()
                 return std::string("/home/") + std::string(p, slash - p);
         }
     }
-    return "/home/todd"; // last-resort fallback
+
+    char username[256] = {0};
+    if (GetEnvironmentVariableA("USERNAME", username, sizeof(username)) > 0)
+    {
+        std::string cand = std::string("/home/") + username;
+        if (GetFileAttributesA((std::string("Z:") + cand).c_str()) != INVALID_FILE_ATTRIBUTES)
+            return cand;
+    }
+
+    return std::string(); // unresolvable — caller must handle empty
 }
 
 static const char* GetWineTtsPipePath()
 {
     if (g_WineTtsPipePath[0]) return g_WineTtsPipePath;
     std::string linuxHome = GetLinuxHome();
+    if (linuxHome.empty()) return nullptr;
     snprintf(g_WineTtsPipePath, sizeof(g_WineTtsPipePath), "Z:%s\\.gw2-tts-pipe", linuxHome.c_str());
     return g_WineTtsPipePath;
 }
@@ -175,6 +186,7 @@ static const char* GetWineTtsPipePath()
 static std::string GetLinuxTtsConfigPath()
 {
     std::string linuxHome = GetLinuxHome();
+    if (linuxHome.empty()) return std::string();
     return std::string("Z:") + linuxHome + "\\.gw2-tts-config";
 }
 
@@ -203,6 +215,7 @@ static void WriteLinuxTtsConfig()
 
     // Signal the running daemon to reload its config
     const char* pipePath = GetWineTtsPipePath();
+    if (!pipePath) return;
     HANDLE hPipe = CreateFileA(pipePath, GENERIC_WRITE, 0, nullptr,
                                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (hPipe != INVALID_HANDLE_VALUE)
@@ -471,8 +484,9 @@ static void SpeakViaWinePipe(const char* utf8)
     static int s_ConsecFail = 0;
 
     const char* pipePath = GetWineTtsPipePath();
+    if (!pipePath) return;
     HANDLE hPipe = CreateFileA(pipePath, GENERIC_WRITE, 0, nullptr,
-                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (hPipe == INVALID_HANDLE_VALUE)
     {
         DWORD err = GetLastError();
@@ -671,10 +685,13 @@ static DWORD WINAPI BoostSpeakThread(LPVOID param)
 
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 
+    bool comCleanup = true;
+    auto cleanup = [&]() { if (comCleanup) { CoUninitialize(); comCleanup = false; } };
+
     ISpVoice* pCap = nullptr;
     if (FAILED(CoCreateInstance(CLSID_SpVoice, nullptr, CLSCTX_ALL,
                                 IID_ISpVoice, (void**)&pCap)) || !pCap)
-    { CoUninitialize(); return 0; }
+    { cleanup(); return 0; }
 
     std::string voiceId = g_TtsVoiceTokenId;
     std::string outId   = g_TtsOutputTokenId;
@@ -697,7 +714,7 @@ static DWORD WINAPI BoostSpeakThread(LPVOID param)
 
     IStream* pMem = nullptr;
     if (FAILED(CreateStreamOnHGlobal(nullptr, TRUE, &pMem)))
-    { pCap->Release(); CoUninitialize(); return 0; }
+    { pCap->Release(); cleanup(); return 0; }
 
     ISpStream* pSS = nullptr;
     if (FAILED(CoCreateInstance(CLSID_SpStream_Local, nullptr, CLSCTX_ALL,
@@ -706,7 +723,7 @@ static DWORD WINAPI BoostSpeakThread(LPVOID param)
         CoCreateInstance(CLSID_SpStream_Local, nullptr, CLSCTX_ALL,
                          IID_ISpStream_MSDN, (void**)&pSS);
     }
-    if (!pSS) { pMem->Release(); pCap->Release(); CoUninitialize(); return 0; }
+    if (!pSS) { pMem->Release(); pCap->Release(); cleanup(); return 0; }
 
     WAVEFORMATEX wfx = {};
     wfx.wFormatTag      = WAVE_FORMAT_PCM;
@@ -718,7 +735,7 @@ static DWORD WINAPI BoostSpeakThread(LPVOID param)
 
     if (FAILED(pSS->SetBaseStream(pMem, SPDFID_WFX, &wfx)) ||
         FAILED(pCap->SetOutput(pSS, TRUE)))
-    { pSS->Release(); pMem->Release(); pCap->Release(); CoUninitialize(); return 0; }
+    { pSS->Release(); pMem->Release(); pCap->Release(); cleanup(); return 0; }
 
     pCap->Speak(text.c_str(), SPF_DEFAULT, nullptr);
     pCap->Release();
@@ -734,7 +751,7 @@ static DWORD WINAPI BoostSpeakThread(LPVOID param)
     pSS->Release();
     pMem->Release();
 
-    if (nRead < 2) { CoUninitialize(); return 0; }
+    if (nRead < 2) { cleanup(); return 0; }
 
     auto* smp    = reinterpret_cast<int16_t*>(pcm.data());
     ULONG nSamps = nRead / 2;
@@ -765,7 +782,7 @@ static DWORD WINAPI BoostSpeakThread(LPVOID param)
         waveOutClose(hWO);
     }
 
-    CoUninitialize();
+    cleanup();
     return 0;
 }
 
@@ -796,7 +813,9 @@ static void SpeakText(const wchar_t* text)
         {
             g_WineTtsFallback = true;
             char dbg[384];
-            snprintf(dbg, sizeof(dbg), "[TTS] SAPI Speak failed, activating Wine pipe fallback (pipe=%s)", GetWineTtsPipePath());
+            const char* pp = GetWineTtsPipePath();
+            snprintf(dbg, sizeof(dbg), "[TTS] SAPI Speak failed, activating Wine pipe fallback (pipe=%s)",
+                     pp ? pp : "(unavailable)");
             g_API->Log(LOGL_INFO, "GW2Accessibility", dbg);
             int len = WideCharToMultiByte(CP_UTF8, 0, text, -1, nullptr, 0, nullptr, nullptr);
             std::string utf8(len > 0 ? static_cast<size_t>(len) - 1 : 0, '\0');
@@ -853,20 +872,29 @@ static std::string FetchSkillName(unsigned int skillID, const char* eventSkillNa
     // Use the name from the combat event if available (provided by ArcdpsIntegration)
     if (eventSkillName && eventSkillName[0])
     {
-        g_DebuffNameCache[skillID] = eventSkillName;
+        {
+            std::lock_guard<std::mutex> lock(g_SharedMutex);
+            g_DebuffNameCache[skillID] = eventSkillName;
+        }
         return eventSkillName;
     }
 
     // Check runtime cache first
-    auto it = g_DebuffNameCache.find(skillID);
-    if (it != g_DebuffNameCache.end())
-        return it->second;
+    {
+        std::lock_guard<std::mutex> lock(g_SharedMutex);
+        auto it = g_DebuffNameCache.find(skillID);
+        if (it != g_DebuffNameCache.end())
+            return it->second;
+    }
 
     // Check built-in mapping
     auto builtin = g_BuiltinBuffNames.find(skillID);
     if (builtin != g_BuiltinBuffNames.end())
     {
-        g_DebuffNameCache[skillID] = builtin->second;
+        {
+            std::lock_guard<std::mutex> lock(g_SharedMutex);
+            g_DebuffNameCache[skillID] = builtin->second;
+        }
         return builtin->second;
     }
 
@@ -931,7 +959,10 @@ static std::string FetchSkillName(unsigned int skillID, const char* eventSkillNa
     if (name.empty())
         name = "Skill " + std::to_string(skillID);
 
-    g_DebuffNameCache[skillID] = name;
+    {
+        std::lock_guard<std::mutex> lock(g_SharedMutex);
+        g_DebuffNameCache[skillID] = name;
+    }
     return name;
 }
 
@@ -979,9 +1010,12 @@ static std::string ParseIconUrl(const std::string& jsonBody)
 
 static std::string FetchSkillIconUrl(unsigned int skillID)
 {
-    auto cached = g_IconUrlCache.find(skillID);
-    if (cached != g_IconUrlCache.end())
-        return cached->second;
+    {
+        std::lock_guard<std::mutex> lock(g_SharedMutex);
+        auto cached = g_IconUrlCache.find(skillID);
+        if (cached != g_IconUrlCache.end())
+            return cached->second;
+    }
 
     HINTERNET hSession = WinHttpOpen(L"GW2Accessibility/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, nullptr, nullptr, 0);
     if (!hSession) return "";
@@ -1000,7 +1034,10 @@ static std::string FetchSkillIconUrl(unsigned int skillID)
     }
     WinHttpCloseHandle(hSession);
 
-    g_IconUrlCache[skillID] = iconUrl;
+    {
+        std::lock_guard<std::mutex> lock(g_SharedMutex);
+        g_IconUrlCache[skillID] = iconUrl;
+    }
 
     return iconUrl;
 }
@@ -1382,7 +1419,10 @@ static void OnTextureLoaded(const char* aIdentifier, Texture_t* aTexture)
         char buf[256];
         if (aTexture && aTexture->Resource)
         {
-            g_IconTextures[skillID] = aTexture;
+            {
+                std::lock_guard<std::mutex> lock(g_SharedMutex);
+                g_IconTextures[skillID] = aTexture;
+            }
             snprintf(buf, sizeof(buf), "[ICON] OnTextureLoaded: %s skill=%u W=%u H=%u (cached)", aIdentifier, skillID, aTexture->Width, aTexture->Height);
         }
         else
@@ -1395,12 +1435,15 @@ static void OnTextureLoaded(const char* aIdentifier, Texture_t* aTexture)
 
 static ImTextureID LoadIconTexture(unsigned int skillID)
 {
-    auto cached = g_IconTextures.find(skillID);
-    if (cached != g_IconTextures.end())
     {
-        if (cached->second && cached->second->Resource)
-            return static_cast<ImTextureID>(cached->second->Resource);
-        return nullptr;
+        std::lock_guard<std::mutex> lock(g_SharedMutex);
+        auto cached = g_IconTextures.find(skillID);
+        if (cached != g_IconTextures.end())
+        {
+            if (cached->second && cached->second->Resource)
+                return static_cast<ImTextureID>(cached->second->Resource);
+            return nullptr;
+        }
     }
 
     std::string iconsDir = GetIconsDir();
@@ -1412,7 +1455,10 @@ static ImTextureID LoadIconTexture(unsigned int skillID)
     Texture_t* tex = g_API->Textures_Get(identifier);
     if (tex && tex->Resource)
     {
-        g_IconTextures[skillID] = tex;
+        {
+            std::lock_guard<std::mutex> lock(g_SharedMutex);
+            g_IconTextures[skillID] = tex;
+        }
         return static_cast<ImTextureID>(tex->Resource);
     }
 
@@ -1500,6 +1546,7 @@ static void LoadAllConfiguredIcons()
 
 static void PruneExpiredMechanics(DWORD now)
 {
+    std::lock_guard<std::mutex> lock(g_SharedMutex);
     for (auto it = g_ActiveMechanics.begin(); it != g_ActiveMechanics.end(); )
     {
         if (now - it->second > g_MechanicIconTimeout)
@@ -1643,17 +1690,22 @@ static std::string WinePathToUnix(const char* winePath)
                     snprintf(buf, sizeof(buf), "%s/drive_c", detectedPfx.c_str());
                 else
                 {
-                    const char* candidates[] = {
-                        "/home/todd/Documents/Games/guild-wars-2/pfx",
-                        "/home/todd/Documents/Games/guild-wars-2",
-                        "/home/todd/.wine"
-                    };
-                    for (auto& c : candidates)
+                    std::string linuxHome = GetLinuxHome();
+                    if (!linuxHome.empty())
                     {
-                        if (std::filesystem::exists(std::string(c) + "/drive_c"))
+                        const char* homeCandidates[] = {
+                            "Documents/Games/guild-wars-2/pfx",
+                            "Documents/Games/guild-wars-2",
+                            ".wine"
+                        };
+                        for (auto& c : homeCandidates)
                         {
-                            snprintf(buf, sizeof(buf), "%s/drive_c", c);
-                            break;
+                            std::string full = linuxHome + "/" + c;
+                            if (std::filesystem::exists(full + "/drive_c"))
+                            {
+                                snprintf(buf, sizeof(buf), "%s/drive_c", full.c_str());
+                                break;
+                            }
                         }
                     }
                 }
@@ -1678,17 +1730,22 @@ static std::string WinePathToUnix(const char* winePath)
                             snprintf(buf, sizeof(buf), "%s/drive_c", detectedPfx.c_str());
                         else
                         {
-                            const char* candidates[] = {
-                                "/home/todd/Documents/Games/guild-wars-2/pfx",
-                                "/home/todd/Documents/Games/guild-wars-2",
-                                "/home/todd/.wine"
-                            };
-                            for (auto& c : candidates)
+                            std::string linuxHome = GetLinuxHome();
+                            if (!linuxHome.empty())
                             {
-                                if (std::filesystem::exists(std::string(c) + "/drive_c"))
+                                const char* homeCandidates[] = {
+                                    "Documents/Games/guild-wars-2/pfx",
+                                    "Documents/Games/guild-wars-2",
+                                    ".wine"
+                                };
+                                for (auto& c : homeCandidates)
                                 {
-                                    snprintf(buf, sizeof(buf), "%s/drive_c", c);
-                                    break;
+                                    std::string full = linuxHome + "/" + c;
+                                    if (std::filesystem::exists(full + "/drive_c"))
+                                    {
+                                        snprintf(buf, sizeof(buf), "%s/drive_c", full.c_str());
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -3077,7 +3134,10 @@ static void OnCombatEvent(void* aEventArgs)
 
         // Cache the name so FetchSkillName can find it on the remove event
         if (cbt->skillname && cbt->skillname[0])
+        {
+            std::lock_guard<std::mutex> lock(g_SharedMutex);
             g_DebuffNameCache[sid] = cbt->skillname;
+        }
 
         char fdbg[512];
         snprintf(fdbg, sizeof(fdbg), "[BUFF_DUMP] skill=%u name=\"%s\"",
@@ -3131,39 +3191,61 @@ static void OnCombatEvent(void* aEventArgs)
 
     // ── Track active mechanics for icon display ──────────────────────────────
     // Runs independently of TTS/Announce settings
-    if (isRemove)
     {
-        if (cbt->ev->IsBuffRemove == 1)
-            g_ActiveMechanics.erase(skillID);
+        std::lock_guard<std::mutex> lock(g_SharedMutex);
+        if (isRemove)
+        {
+            if (cbt->ev->IsBuffRemove == 1)
+                g_ActiveMechanics.erase(skillID);
+        }
+        else
+        {
+            bool iconTracked = false;
+            if (IsBuiltinMechanicIconEnabled(skillID))
+            {
+                g_ActiveMechanics[skillID] = now;
+                iconTracked = true;
+            }
+            if (!iconTracked)
+            {
+                for (const auto& m : g_RaidMechanics)
+                {
+                    if (m.iconEnabled && m.skillID == skillID)
+                    {
+                        g_ActiveMechanics[skillID] = now;
+                        break;
+                    }
+                }
+            }
+        }
     }
-    else
+    // LoadIconTexture outside the lock — it does I/O
+    if (!isRemove)
     {
         bool iconTracked = false;
         if (IsBuiltinMechanicIconEnabled(skillID))
-        {
-            g_ActiveMechanics[skillID] = now;
-            LoadIconTexture(skillID);
             iconTracked = true;
-        }
         if (!iconTracked)
         {
             for (const auto& m : g_RaidMechanics)
             {
-                if (m.iconEnabled && m.skillID == skillID)
-                {
-                    g_ActiveMechanics[skillID] = now;
-                    LoadIconTexture(skillID);
-                    break;
-                }
+                if (m.iconEnabled && m.skillID == skillID) { iconTracked = true; break; }
             }
         }
+        if (iconTracked)
+            LoadIconTexture(skillID);
     }
 
     // ── Collect non-standard effects for management window ──────────────
     // Only collects effects ON the player
     if (isOnSelf && !isRemove && !IsCondition(skillID) && !IsBoon(skillID))
     {
-        if (g_EncounteredEffects.find(skillID) == g_EncounteredEffects.end())
+        bool found;
+        {
+            std::lock_guard<std::mutex> lock(g_SharedMutex);
+            found = g_EncounteredEffects.find(skillID) != g_EncounteredEffects.end();
+        }
+        if (!found)
         {
             const char* name = nullptr;
             if (cbt->skillname && cbt->skillname[0])
@@ -3181,7 +3263,10 @@ static void OnCombatEvent(void* aEventArgs)
             else
                 snprintf(nameBuf, sizeof(nameBuf), "Unknown (%u)", skillID);
 
-            g_EncounteredEffects[skillID] = nameBuf;
+            {
+                std::lock_guard<std::mutex> lock(g_SharedMutex);
+                g_EncounteredEffects[skillID] = nameBuf;
+            }
             char buf[256];
             snprintf(buf, sizeof(buf), "[EFFECT_MGR] discovered skill=%u name=\"%s\"", skillID, nameBuf);
             g_API->Log(LOGL_INFO, "GW2Accessibility", buf);
@@ -3256,7 +3341,10 @@ static void OnCombatEvent(void* aEventArgs)
             if (cbt->ev->IsBuffRemove >= 2)
             {
                 g_NecrosisStacks = 0;
-                g_ActiveBuffs.erase(47414);
+                {
+                    std::lock_guard<std::mutex> lock(g_SharedMutex);
+                    g_ActiveBuffs.erase(47414);
+                }
                 InitSAPI();
                 if (g_TtsReady)
                 {
@@ -3271,7 +3359,10 @@ static void OnCombatEvent(void* aEventArgs)
         }
 
         g_NecrosisStacks++;
-        g_ActiveBuffs[47414] = now;
+        {
+            std::lock_guard<std::mutex> lock(g_SharedMutex);
+            g_ActiveBuffs[47414] = now;
+        }
 
         if (now - g_LastNecrosisTick >= 5000)
         {
@@ -3298,25 +3389,29 @@ static void OnCombatEvent(void* aEventArgs)
     // ── Buff removals — clear from active set so re-application is spoken again ──
     if (isRemove)
     {
+        std::lock_guard<std::mutex> lock(g_SharedMutex);
         g_ActiveBuffs.erase(skillID);
         return;
     }
 
     // ── Buff additions — only speak if not already active on player ──
-    auto activeIt = g_ActiveBuffs.find(skillID);
-    if (activeIt != g_ActiveBuffs.end())
     {
-        if (now - activeIt->second > g_ActiveBuffTimeout)
+        std::lock_guard<std::mutex> lock(g_SharedMutex);
+        auto activeIt = g_ActiveBuffs.find(skillID);
+        if (activeIt != g_ActiveBuffs.end())
         {
-            g_ActiveBuffs.erase(activeIt);
+            if (now - activeIt->second > g_ActiveBuffTimeout)
+            {
+                g_ActiveBuffs.erase(activeIt);
+            }
+            else
+            {
+                g_ActiveBuffs[skillID] = now;
+                return;
+            }
         }
-        else
-        {
-            g_ActiveBuffs[skillID] = now;
-            return;
-        }
+        g_ActiveBuffs[skillID] = now;
     }
-    g_ActiveBuffs[skillID] = now;
 
     std::string text;
 
@@ -3732,14 +3827,12 @@ static void OnRender()
     }
 
     // Test icon toggle: show Necrosis icon so user can configure position/size/opacity
-    if (g_ShowTestIcon)
     {
-        LoadIconTexture(47414);
-        g_ActiveMechanics[47414] = GetTickCount();
-    }
-    else
-    {
-        g_ActiveMechanics.erase(47414);
+        std::lock_guard<std::mutex> lock(g_SharedMutex);
+        if (g_ShowTestIcon)
+            g_ActiveMechanics[47414] = GetTickCount();
+        else
+            g_ActiveMechanics.erase(47414);
     }
 
     if (g_IconDisplayEnabled && !g_ActiveMechanics.empty())
@@ -3773,10 +3866,15 @@ static void OnRender()
         float offsetX = (g_IconPosition.offsetXPct / 100.0f) * displaySize.x;
         float offsetY = (g_IconPosition.offsetYPct / 100.0f) * displaySize.y;
 
-        float x = baseX + offsetX - (g_ActiveMechanics.size() * (g_IconSize + g_IconSpacing) - g_IconSpacing) * 0.5f;
+        std::vector<std::pair<unsigned int, DWORD>> activeMechanics;
+        {
+            std::lock_guard<std::mutex> lock(g_SharedMutex);
+            activeMechanics.assign(g_ActiveMechanics.begin(), g_ActiveMechanics.end());
+        }
+        float x = baseX + offsetX - (activeMechanics.size() * (g_IconSize + g_IconSpacing) - g_IconSpacing) * 0.5f;
         float y = baseY + offsetY - g_IconSize * 0.5f;
 
-        for (const auto& entry : g_ActiveMechanics)
+        for (const auto& entry : activeMechanics)
         {
             ImTextureID tex = LoadIconTexture(entry.first);
             if (tex)
@@ -3895,11 +3993,18 @@ static void OnMechanicsWindowRender()
             changed = true;
         }
 
+        ImGui::SameLine();
+        if (ImGui::SmallButton("X"))
+            toRemove = static_cast<int>(i);
+
         ImGui::PopID();
     }
 
     if (toRemove >= 0)
+    {
         g_RaidMechanics.erase(g_RaidMechanics.begin() + toRemove);
+        changed = true;
+    }
 
     ImGui::Separator();
     ImGui::TextDisabled("Toggle TTS and/or Icon alerts per mechanic.");
@@ -3929,7 +4034,12 @@ static void OnEffectManagerRender()
     ImGui::TextDisabled("Standard conditions/boons are always included automatically.");
     ImGui::Separator();
 
-    if (g_EncounteredEffects.empty())
+    bool hasEffects;
+    {
+        std::lock_guard<std::mutex> lock(g_SharedMutex);
+        hasEffects = !g_EncounteredEffects.empty();
+    }
+    if (!hasEffects)
     {
         ImGui::TextDisabled("No effects discovered yet. Play the game to encounter effects.");
     }
@@ -3938,8 +4048,11 @@ static void OnEffectManagerRender()
         bool changed = false;
 
         // Sort by name for easier browsing
-        std::vector<std::pair<unsigned int, std::string>> sorted(
-            g_EncounteredEffects.begin(), g_EncounteredEffects.end());
+        std::vector<std::pair<unsigned int, std::string>> sorted;
+        {
+            std::lock_guard<std::mutex> lock(g_SharedMutex);
+            sorted.assign(g_EncounteredEffects.begin(), g_EncounteredEffects.end());
+        }
         std::sort(sorted.begin(), sorted.end(),
             [](const auto& a, const auto& b) { return a.second < b.second; });
 
@@ -3984,7 +4097,11 @@ static void OnEffectManagerRender()
         ImGui::Separator();
         if (ImGui::Button("Clear All Discovered Effects"))
         {
-            g_EncounteredEffects.clear();
+            {
+                std::lock_guard<std::mutex> lock(g_SharedMutex);
+                g_EncounteredEffects.clear();
+            }
+            g_TrackedConditionsExtra.clear();
             g_TrackedConditionsExtra.clear();
             g_TrackedBuffsExtra.clear();
             changed = true;
@@ -4967,7 +5084,7 @@ void AddonUnload()
 
 extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef()
 {
-    static AddonVersion_t s_Version = { 1, 2, 4, 0 };
+    static AddonVersion_t s_Version = { 1, 2, 5, 0 };
 
     static AddonDefinition_t s_Def = {};
     s_Def.Signature  = 897849539; // 0x358418C3 — random 4 bytes, no longer -2
