@@ -5055,7 +5055,6 @@ void AddonLoad(AddonAPI_t* aAPI)
     EnumerateTtsVoices();
     EnumerateTtsOutputDevices();
     InitMumble();
-    DeployReffectPack();
 
     g_API->InputBinds_RegisterWithString(
         "GW2ACCESSIBILITY_MOUSE_TOGGLE",
@@ -5121,7 +5120,7 @@ void AddonUnload()
 
 extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef()
 {
-    static AddonVersion_t s_Version = { 1, 2, 6, 0 };
+    static AddonVersion_t s_Version = { 1, 2, 7, 0 };
 
     static AddonDefinition_t s_Def = {};
     s_Def.Signature  = 897849539; // 0x358418C3 — random 4 bytes, no longer -2
