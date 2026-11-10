@@ -68,6 +68,21 @@ static bool g_HoldMode = false;
 static bool g_SnapToAOnUserMove = true;
 static bool g_CrosshairEnabled = false;
 static float g_CrosshairColor[4] = {1.0f, 0.0f, 0.0f, 1.0f};
+static bool g_CrosshairFullScreen = true;
+static float g_CrosshairLength = 150.0f;
+static float g_CrosshairThickness = 2.0f;
+static bool g_CrosshairOnlyWhenHidden = true;
+
+static bool g_CursorCircleEnabled = false;
+static float g_CursorCircleRadius = 40.0f;
+static float g_CursorCircleThickness = 2.0f;
+static float g_CursorCircleColor[4] = {1.0f, 0.0f, 0.0f, 1.0f};
+static bool g_CursorCircleFillEnabled = false;
+static float g_CursorCircleFillColor[4] = {1.0f, 0.0f, 0.0f, 0.25f};
+
+static bool g_CursorDotEnabled = false;
+static float g_CursorDotRadius = 2.0f;
+static float g_CursorDotColor[4] = {1.0f, 0.0f, 0.0f, 1.0f};
 
 // ── Active Mechanic Icons ────────────────────────────────────────────────────
 
@@ -676,6 +691,7 @@ static std::unordered_map<std::string, bool> g_SquadReadyStatus;
 // Ally downed tracking
 static bool g_AllyDownedEnabled = false;
 static bool g_AllyDownedSquadOnly = false;
+static bool g_AllyDownedDingSound = false;
 static bool g_TofusToggle = false;
 static bool g_BreakbarAlertsEnabled = false;
 static std::unordered_set<uint64_t> g_DownedAgents;
@@ -811,6 +827,74 @@ static DWORD WINAPI BoostSpeakThread(LPVOID param)
 
     cleanup();
     return 0;
+}
+
+// Ding alert sound — synthesized chime played via waveOut (routes to configured TTS audio device)
+struct DingToneJob {
+    std::string outId;
+};
+
+static DWORD WINAPI DingSoundThread(LPVOID param)
+{
+    auto* job = reinterpret_cast<DingToneJob*>(param);
+    std::string outId = job ? job->outId : "";
+    delete job;
+
+    const int sampleRate = 22050;
+    const float duration = 0.20f;
+    const int numSamples = static_cast<int>(sampleRate * duration);
+    std::vector<int16_t> pcm(numSamples);
+    for (int i = 0; i < numSamples; ++i)
+    {
+        float t = (float)i / (float)sampleRate;
+        // Two harmonics: C6 (1046.5 Hz) and E6 (1318.5 Hz)
+        float s = 0.7f * sinf(6.2831853f * 1046.5f * t) + 0.3f * sinf(6.2831853f * 1318.5f * t);
+        float decay = expf(-t * 16.0f);
+        pcm[i] = static_cast<int16_t>(s * decay * 28000.0f);
+    }
+
+    WAVEFORMATEX wfx = {};
+    wfx.wFormatTag      = WAVE_FORMAT_PCM;
+    wfx.nChannels       = 1;
+    wfx.nSamplesPerSec  = sampleRate;
+    wfx.wBitsPerSample  = 16;
+    wfx.nBlockAlign     = 2;
+    wfx.nAvgBytesPerSec = sampleRate * 2;
+
+    UINT devIdx = WAVE_MAPPER;
+    if (!outId.empty())
+        devIdx = static_cast<UINT>(std::atoi(outId.c_str()));
+
+    HWAVEOUT hWO = nullptr;
+    HANDLE hEvent = CreateEventA(nullptr, FALSE, FALSE, nullptr);
+    if (waveOutOpen(&hWO, devIdx, &wfx, (DWORD_PTR)hEvent, 0, CALLBACK_EVENT) == MMSYSERR_NOERROR)
+    {
+        WAVEHDR hdr = {};
+        hdr.lpData = reinterpret_cast<LPSTR>(pcm.data());
+        hdr.dwBufferLength = static_cast<DWORD>(numSamples * sizeof(int16_t));
+        waveOutPrepareHeader(hWO, &hdr, sizeof(hdr));
+        waveOutWrite(hWO, &hdr, sizeof(hdr));
+
+        WaitForSingleObject(hEvent, 1000);
+
+        waveOutUnprepareHeader(hWO, &hdr, sizeof(hdr));
+        waveOutClose(hWO);
+        CloseHandle(hEvent);
+    }
+    else
+    {
+        if (hEvent) CloseHandle(hEvent);
+        MessageBeep(MB_ICONASTERISK);
+    }
+    return 0;
+}
+
+static void PlayDingSound()
+{
+    auto* job = new DingToneJob{g_TtsOutputTokenId};
+    HANDLE h = CreateThread(nullptr, 0, DingSoundThread, job, 0, nullptr);
+    if (h) CloseHandle(h);
+    else { delete job; MessageBeep(MB_ICONASTERISK); }
 }
 
 // MumbleLink — player identity
@@ -2385,6 +2469,19 @@ static void SaveSettings()
     j["snapToAOnUserMove"] = g_SnapToAOnUserMove;
     j["crosshairEnabled"] = g_CrosshairEnabled;
     j["crosshairColor"] = { g_CrosshairColor[0], g_CrosshairColor[1], g_CrosshairColor[2], g_CrosshairColor[3] };
+    j["crosshairFullScreen"] = g_CrosshairFullScreen;
+    j["crosshairLength"] = g_CrosshairLength;
+    j["crosshairThickness"] = g_CrosshairThickness;
+    j["crosshairOnlyWhenHidden"] = g_CrosshairOnlyWhenHidden;
+    j["cursorCircleEnabled"] = g_CursorCircleEnabled;
+    j["cursorCircleRadius"] = g_CursorCircleRadius;
+    j["cursorCircleThickness"] = g_CursorCircleThickness;
+    j["cursorCircleColor"] = { g_CursorCircleColor[0], g_CursorCircleColor[1], g_CursorCircleColor[2], g_CursorCircleColor[3] };
+    j["cursorCircleFillEnabled"] = g_CursorCircleFillEnabled;
+    j["cursorCircleFillColor"] = { g_CursorCircleFillColor[0], g_CursorCircleFillColor[1], g_CursorCircleFillColor[2], g_CursorCircleFillColor[3] };
+    j["cursorDotEnabled"] = g_CursorDotEnabled;
+    j["cursorDotRadius"] = g_CursorDotRadius;
+    j["cursorDotColor"] = { g_CursorDotColor[0], g_CursorDotColor[1], g_CursorDotColor[2], g_CursorDotColor[3] };
     j["keybindOverlayEnabled"] = g_KeybindOverlayEnabled;
     j["keybindVisibility"] = g_KeybindVisibility;
     j["keybindShowMovement"]   = g_KeybindShowMovement;
@@ -2430,6 +2527,7 @@ static void SaveSettings()
     j["readyCheckTts"] = g_ReadyCheckTtsEnabled;
     j["allyDownedEnabled"] = g_AllyDownedEnabled;
     j["allyDownedSquadOnly"] = g_AllyDownedSquadOnly;
+    j["allyDownedDingSound"] = g_AllyDownedDingSound;
     j["tofusToggle"] = g_TofusToggle;
     j["breakbarAlerts"] = g_BreakbarAlertsEnabled;
 
@@ -2514,6 +2612,31 @@ static void LoadSettings()
         if (chColor.is_array() && chColor.size() >= 4)
             for (int i = 0; i < 4; i++)
                 g_CrosshairColor[i] = chColor[i].get<float>();
+        g_CrosshairFullScreen = j.value("crosshairFullScreen", true);
+        g_CrosshairLength = j.value("crosshairLength", 150.0f);
+        g_CrosshairThickness = j.value("crosshairThickness", 2.0f);
+        g_CrosshairOnlyWhenHidden = j.value("crosshairOnlyWhenHidden", true);
+
+        g_CursorCircleEnabled = j.value("cursorCircleEnabled", false);
+        g_CursorCircleRadius = j.value("cursorCircleRadius", 40.0f);
+        g_CursorCircleThickness = j.value("cursorCircleThickness", 2.0f);
+        auto& ccColor = j["cursorCircleColor"];
+        if (ccColor.is_array() && ccColor.size() >= 4)
+            for (int i = 0; i < 4; i++)
+                g_CursorCircleColor[i] = ccColor[i].get<float>();
+        g_CursorCircleFillEnabled = j.value("cursorCircleFillEnabled", false);
+        auto& ccFillColor = j["cursorCircleFillColor"];
+        if (ccFillColor.is_array() && ccFillColor.size() >= 4)
+            for (int i = 0; i < 4; i++)
+                g_CursorCircleFillColor[i] = ccFillColor[i].get<float>();
+
+        g_CursorDotEnabled = j.value("cursorDotEnabled", false);
+        g_CursorDotRadius = j.value("cursorDotRadius", 2.0f);
+        auto& dotColor = j["cursorDotColor"];
+        if (dotColor.is_array() && dotColor.size() >= 4)
+            for (int i = 0; i < 4; i++)
+                g_CursorDotColor[i] = dotColor[i].get<float>();
+
         g_KeybindOverlayEnabled = j.value("keybindOverlayEnabled", false);
         g_KeybindVisibility = j.value("keybindVisibility", KV_Always);
         g_KeybindShowMovement   = j.value("keybindShowMovement",   true);
@@ -2577,6 +2700,7 @@ static void LoadSettings()
         g_SnapToAOnUserMove = j.value("snapToAOnUserMove", true);
         g_AllyDownedEnabled = j.value("allyDownedEnabled", false);
         g_AllyDownedSquadOnly = j.value("allyDownedSquadOnly", false);
+        g_AllyDownedDingSound = j.value("allyDownedDingSound", false);
         g_TofusToggle = j.value("tofusToggle", false);
         g_BreakbarAlertsEnabled = j.value("breakbarAlerts", false);
 
@@ -3098,12 +3222,19 @@ static void OnCombatEvent(void* aEventArgs)
         if (!g_DownedAgents.count(agentId))
         {
             g_DownedAgents.insert(agentId);
-            const char* agentName = cbt->src && cbt->src->Name ? cbt->src->Name : "Ally";
-            InitSAPI();
-            if (g_TtsReady)
+            if (g_AllyDownedDingSound)
             {
-                std::string speech = std::string(agentName) + " downed";
-                SpeakText(Utf8ToWide(speech.c_str()).c_str());
+                PlayDingSound();
+            }
+            else
+            {
+                const char* agentName = cbt->src && cbt->src->Name ? cbt->src->Name : "Ally";
+                InitSAPI();
+                if (g_TtsReady)
+                {
+                    std::string speech = std::string(agentName) + " downed";
+                    SpeakText(Utf8ToWide(speech.c_str()).c_str());
+                }
             }
         }
         return;
@@ -3853,13 +3984,51 @@ static void OnRender()
 
     if (g_CrosshairEnabled)
     {
+        bool shouldDraw = true;
+        if (g_CrosshairOnlyWhenHidden)
+        {
+            CURSORINFO ci = { sizeof(CURSORINFO) };
+            shouldDraw = GetCursorInfo(&ci) && !(ci.flags & CURSOR_SHOWING);
+        }
+        if (shouldDraw)
+        {
+            ImDrawList* dl = ImGui::GetOverlayDrawList();
+            ImVec2 mousePos = ImGui::GetMousePos();
+            ImVec2 displaySize = ImGui::GetIO().DisplaySize;
+            ImU32 color = ImGui::GetColorU32(ImVec4(g_CrosshairColor[0], g_CrosshairColor[1], g_CrosshairColor[2], g_CrosshairColor[3]));
+            // Full-screen lines rely on the draw list clipping to the display
+            float ext = g_CrosshairFullScreen ? displaySize.x + displaySize.y : g_CrosshairLength;
+            dl->AddLine(ImVec2(mousePos.x - ext, mousePos.y), ImVec2(mousePos.x + ext, mousePos.y), color, g_CrosshairThickness);
+            dl->AddLine(ImVec2(mousePos.x, mousePos.y - ext), ImVec2(mousePos.x, mousePos.y + ext), color, g_CrosshairThickness);
+        }
+    }
+
+    if (g_CursorCircleEnabled)
+    {
         ImDrawList* dl = ImGui::GetOverlayDrawList();
         ImVec2 mousePos = ImGui::GetMousePos();
-        ImVec2 displaySize = ImGui::GetIO().DisplaySize;
-        ImU32 color = ImGui::GetColorU32(ImVec4(g_CrosshairColor[0], g_CrosshairColor[1], g_CrosshairColor[2], g_CrosshairColor[3]));
-        float thickness = 2.0f;
-        dl->AddLine(ImVec2(0.0f, mousePos.y), ImVec2(displaySize.x, mousePos.y), color, thickness);
-        dl->AddLine(ImVec2(mousePos.x, 0.0f), ImVec2(mousePos.x, displaySize.y), color, thickness);
+        // Force anti-aliased edges for the circle regardless of the host ImGui style.
+        // Use geometric AA (not the texture path) so it is backend-independent; restore
+        // the draw list flags afterwards so other overlay drawing is unaffected.
+        ImDrawListFlags savedFlags = dl->Flags;
+        dl->Flags |=  ImDrawListFlags_AntiAliasedLines | ImDrawListFlags_AntiAliasedFill;
+        dl->Flags &= ~ImDrawListFlags_AntiAliasedLinesUseTex;
+        if (g_CursorCircleFillEnabled)
+        {
+            ImU32 fillColor = ImGui::GetColorU32(ImVec4(g_CursorCircleFillColor[0], g_CursorCircleFillColor[1], g_CursorCircleFillColor[2], g_CursorCircleFillColor[3]));
+            dl->AddCircleFilled(mousePos, g_CursorCircleRadius, fillColor);
+        }
+        ImU32 outlineColor = ImGui::GetColorU32(ImVec4(g_CursorCircleColor[0], g_CursorCircleColor[1], g_CursorCircleColor[2], g_CursorCircleColor[3]));
+        dl->AddCircle(mousePos, g_CursorCircleRadius, outlineColor, 0, g_CursorCircleThickness);
+        dl->Flags = savedFlags;
+    }
+
+    if (g_CursorDotEnabled)
+    {
+        ImDrawList* dl = ImGui::GetOverlayDrawList();
+        ImVec2 mousePos = ImGui::GetMousePos();
+        ImU32 dotColor = ImGui::GetColorU32(ImVec4(g_CursorDotColor[0], g_CursorDotColor[1], g_CursorDotColor[2], g_CursorDotColor[3]));
+        dl->AddCircleFilled(mousePos, g_CursorDotRadius, dotColor);
     }
 
     // Test icon toggle: show Necrosis icon so user can configure position/size/opacity
@@ -4846,9 +5015,21 @@ static void OnOptionsRender()
             ImGui::Indent();
             changed |= ImGui::Checkbox("Squad Only", &g_AllyDownedSquadOnly);
             ImGui::TextDisabled("Only announce when in a squad (filters party-only groups).");
+            changed |= ImGui::Checkbox("Play ding sound instead of name", &g_AllyDownedDingSound);
+            if (g_AllyDownedDingSound)
+            {
+                ImGui::SameLine();
+                if (ImGui::Button("Test Sound##ally_downed_ding"))
+                {
+                    PlayDingSound();
+                }
+            }
             ImGui::Unindent();
         }
-        ImGui::TextDisabled("Speaks \"PlayerName downed\" when a squad member goes downed.");
+        if (g_AllyDownedDingSound)
+            ImGui::TextDisabled("Plays a ding sound when an ally goes downed.");
+        else
+            ImGui::TextDisabled("Speaks \"PlayerName downed\" when a squad member goes downed.");
 
         changed |= ImGui::Checkbox("Announce Food/Utility Expiry", &g_FoodUtilityExpiryEnabled);
         ImGui::TextDisabled("Speaks \"Malnourished\" or \"Diminished\" at map load and every 5 minutes if consumables are missing.");
@@ -4895,14 +5076,63 @@ static void OnOptionsRender()
     {
         ImGui::Indent();
 
-        ImGui::TextUnformatted("Crosshair");
+        ImGui::TextUnformatted("Crosshair & Cursor Highlights");
         ImGui::Separator();
 
         changed |= ImGui::Checkbox("Show Crosshair", &g_CrosshairEnabled);
         if (g_CrosshairEnabled)
         {
             ImGui::Indent();
+            changed |= ImGui::Checkbox("Full screen lines##crosshair", &g_CrosshairFullScreen);
+            if (!g_CrosshairFullScreen)
+            {
+                if (ImGui::SliderFloat("Line length##crosshair", &g_CrosshairLength, 10.0f, 1000.0f, "%.1f px"))
+                {
+                    g_CrosshairLength = roundf(g_CrosshairLength * 2.0f) * 0.5f;
+                    changed = true;
+                }
+            }
+            if (ImGui::SliderFloat("Thickness##crosshair", &g_CrosshairThickness, 1.0f, 10.0f, "%.1f px"))
+            {
+                g_CrosshairThickness = roundf(g_CrosshairThickness * 2.0f) * 0.5f;
+                changed = true;
+            }
             changed |= ImGui::ColorEdit4("Crosshair Color", g_CrosshairColor);
+            changed |= ImGui::Checkbox("Only show when cursor is hidden", &g_CrosshairOnlyWhenHidden);
+            ImGui::Unindent();
+        }
+
+        changed |= ImGui::Checkbox("Show Circle", &g_CursorCircleEnabled);
+        if (g_CursorCircleEnabled)
+        {
+            ImGui::Indent();
+            if (ImGui::SliderFloat("Radius##circle", &g_CursorCircleRadius, 5.0f, 300.0f, "%.1f px"))
+            {
+                g_CursorCircleRadius = roundf(g_CursorCircleRadius * 2.0f) * 0.5f;
+                changed = true;
+            }
+            if (ImGui::SliderFloat("Outline thickness##circle", &g_CursorCircleThickness, 1.0f, 10.0f, "%.1f px"))
+            {
+                g_CursorCircleThickness = roundf(g_CursorCircleThickness * 2.0f) * 0.5f;
+                changed = true;
+            }
+            changed |= ImGui::ColorEdit4("Outline Color##circle", g_CursorCircleColor);
+            changed |= ImGui::Checkbox("Fill##circle", &g_CursorCircleFillEnabled);
+            if (g_CursorCircleFillEnabled)
+                changed |= ImGui::ColorEdit4("Fill Color##circle", g_CursorCircleFillColor);
+            ImGui::Unindent();
+        }
+
+        changed |= ImGui::Checkbox("Show Cursor Dot", &g_CursorDotEnabled);
+        if (g_CursorDotEnabled)
+        {
+            ImGui::Indent();
+            if (ImGui::SliderFloat("Dot size##cursordot", &g_CursorDotRadius, 1.0f, 10.0f, "%.1f px"))
+            {
+                g_CursorDotRadius = roundf(g_CursorDotRadius * 2.0f) * 0.5f;
+                changed = true;
+            }
+            changed |= ImGui::ColorEdit4("Dot Color##cursordot", g_CursorDotColor);
             ImGui::Unindent();
         }
 
@@ -5120,7 +5350,7 @@ void AddonUnload()
 
 extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef()
 {
-    static AddonVersion_t s_Version = { 1, 2, 7, 0 };
+    static AddonVersion_t s_Version = { 1, 2, 8, 0 };
 
     static AddonDefinition_t s_Def = {};
     s_Def.Signature  = 897849539; // 0x358418C3 — random 4 bytes, no longer -2
