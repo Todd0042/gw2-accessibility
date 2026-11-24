@@ -12,7 +12,7 @@
 [![Language: C++17](https://img.shields.io/badge/C%2B%2B-17-00599C.svg?logo=cplusplus&logoColor=white)](CMakeLists.txt)
 [![Platform: Windows & Linux Wine/Proton](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20(Wine%2FProton)-orange.svg)](TTS_SETUP.md)
 [![Nexus API: v6](https://img.shields.io/badge/Nexus%20API-v6-7b2cbf.svg)](nexusheader.h)
-[![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](#-8-license--support)
+[![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-00f0ff.svg)](LICENSE)
 [![Support on Ko-fi](https://img.shields.io/badge/Ko--fi-Support%20Creator-F16061?style=flat&logo=ko-fi&logoColor=white)](https://ko-fi.com/todd0042)
 
 > **A Guild Wars 2 Nexus addon delivering auditory Text-to-Speech callouts, high-visibility cursor highlights, raid mechanic alerts, mouse position snapping, and a live keybind overlay across both Windows and Linux (Wine/Proton).**
@@ -390,7 +390,7 @@ Running `./build.sh` compiles `build/GW2Accessibility.dll` and verifies via `x86
 
 ## 8. License & Support
 
-* **License**: Stated in the repository's prior documentation as **GPL-3.0** *(note: there is currently no standalone `LICENSE` file in the repository root; third-party libraries in `third_party/imgui/` and `third_party/nlohmann/json.hpp` retain their respective licenses)*.
+* **License**: [PolyForm Noncommercial License 1.0.0](LICENSE) — free for personal, hobby, educational, research and nonprofit use; commercial use (inside a company, in a paid product or service, or for profit) requires a separate license from [Todd0042](https://github.com/Todd0042). Third-party libraries in `third_party/imgui/` and `third_party/nlohmann/json.hpp` keep their own licenses.
 * **Author**: [Todd0042](https://github.com/Todd0042)
 
 <p align="center">
